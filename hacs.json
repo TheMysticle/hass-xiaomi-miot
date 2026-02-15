@@ -1,7 +1,7 @@
 {
   "name": "Xiaomi Miot",
   "content_in_root": false,
-  "zip_release": true,
+  "zip_release": false,
   "filename": "xiaomi_miot.zip",
   "render_readme": true,
   "hide_default_branch": true,
