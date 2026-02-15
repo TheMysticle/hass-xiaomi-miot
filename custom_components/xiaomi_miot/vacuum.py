@@ -89,7 +89,7 @@ class VacuumCoordinateSensor(BaseSubEntity, SensorBaseEntity):
         kwargs = {'domain': 'sensor'}
         super().__init__(parent, attr, option, **kwargs)
         self._attr_state_class = None
-        self._attr_state = None
+        self._attr_state = 0.0
         self._available = True
 
     @property
