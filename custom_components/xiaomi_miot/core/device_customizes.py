@@ -1057,7 +1057,7 @@ DEVICE_CUSTOMIZES = {
         'switch_properties': 'repeat_state,alarm',
         'select_properties': 'mode,sweep_type,suction_state,water_state',
         'exclude_miot_services': 'order',
-        'exclude_miot_properties': 'vacuum.on,*_points,multi_prop_vacuum,cur_cleaning_path,consumablesinfo,'
+        'exclude_miot_properties': 'vacuum.on,*_points,multi_prop_vacuum,consumablesinfo,'
                                    'dnd_start_*,dnd_end_*',
         'chunk_coordinators': [
             {'interval': 31, 'props': 'status,mode'},
