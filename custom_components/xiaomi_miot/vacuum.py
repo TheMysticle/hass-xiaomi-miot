@@ -8,6 +8,9 @@ from homeassistant.components.vacuum import (  # noqa: F401
     StateVacuumEntity,
     VacuumEntityFeature,  # v2022.5
 )
+from homeassistant.components.sensor import (
+    SensorEntity as SensorBaseEntity,
+)
 from .core.const import VacuumActivity
 
 from . import (
@@ -16,6 +19,7 @@ from . import (
     XIAOMI_CONFIG_SCHEMA as PLATFORM_SCHEMA,  # noqa: F401
     HassEntry,
     MiotEntity,
+    BaseSubEntity,
     MIOT_LOCAL_MODELS,
     async_setup_config_entry,
     bind_services_to_entries,
@@ -26,11 +30,91 @@ from .core.miot_spec import (
     MiotService,
 )
 
+# Mapping for the cleaning path property (siid=10, piid=5)
+CLEANING_PATH_MAPPING = {
+    'data': {
+        'siid': 10,
+        'piid': 5,
+    }
+}
+# Poll interval in seconds when vacuum is cleaning
+CLEANING_PATH_POLL_INTERVAL = 2
+
 _LOGGER = logging.getLogger(__name__)
 DATA_KEY = f'{ENTITY_DOMAIN}.{DOMAIN}'
 SCAN_INTERVAL = timedelta(seconds=60)
 
 SERVICE_TO_METHOD = {}
+
+
+def _parse_cleaning_path(raw_data):
+    """
+    Parse the cleaning path data string returned by siid=10, piid=5.
+
+    The data looks like:
+      [2611,-3.9,-0.9,1.9,1,-3.9,-0.8,1.6,1,...,timestamp]
+
+    Each position record is 4 values: x, y, angle, flag.
+    The last value in the list is a timestamp integer.
+    We return the most recent (x, y, angle) = the 5th-to-last, 4th-to-last,
+    3rd-to-last values before the trailing timestamp.
+    Returns (x, y, rotation) as floats, or (0.0, 0.0, 0.0) on error.
+    """
+    try:
+        if isinstance(raw_data, str):
+            clean = raw_data.strip().strip('[]')
+            parts = [p.strip() for p in clean.split(',') if p.strip()]
+        elif isinstance(raw_data, (list, tuple)):
+            parts = [str(p) for p in raw_data]
+        else:
+            return 0.0, 0.0, 0.0
+
+        if len(parts) < 5:
+            return 0.0, 0.0, 0.0
+
+        # The last element is a large integer timestamp; before it are records of 4 values each.
+        # Most recent point: index [-5] = x, [-4] = y, [-3] = rotation, [-2] = flag, [-1] = timestamp
+        x = float(parts[-5])
+        y = float(parts[-4])
+        rotation = float(parts[-3])
+        return x, y, rotation
+    except (ValueError, IndexError, TypeError):
+        return 0.0, 0.0, 0.0
+
+
+class VacuumCoordinateSensor(BaseSubEntity, SensorBaseEntity):
+    """A sensor sub-entity that reports vacuum X, Y, or rotation from the cleaning path."""
+
+    def __init__(self, parent, attr, option=None):
+        kwargs = {'domain': 'sensor'}
+        super().__init__(parent, attr, option, **kwargs)
+        self._attr_state_class = None
+        self._attr_state = None
+        self._available = True
+
+    @property
+    def native_value(self):
+        return self._attr_state
+
+    @property
+    def available(self):
+        # Always available as long as parent is available
+        return self._parent.available
+
+    def set_value(self, value):
+        """Update sensor value and push state to HA."""
+        self._attr_state = value
+        self._available = True
+        if self.hass and self.platform:
+            self.schedule_update_ha_state()
+
+    def update(self, data=None):
+        """Override to avoid wiping state from parent attrs (we manage state ourselves)."""
+        pass
+
+    async def async_update(self):
+        """No polling; state is pushed from the parent vacuum entity."""
+        pass
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -114,6 +198,129 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         if self._act_locate:
             self._supported_features |= VacuumEntityFeature.LOCATE
 
+        # Cleaning path coordinate sensors
+        self._sensor_x: VacuumCoordinateSensor = None
+        self._sensor_y: VacuumCoordinateSensor = None
+        self._sensor_rotation: VacuumCoordinateSensor = None
+        self._path_polling_task: asyncio.Task = None
+        self._path_polling_active = False
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        await self._async_setup_coordinate_sensors()
+
+    async def _async_setup_coordinate_sensors(self):
+        """Create and register the X, Y, and rotation coordinate sensors."""
+        if not self.hass:
+            return
+
+        add_sensors = self._add_entities.get('sensor')
+        if not add_sensors:
+            # Sensors platform adder may not be available yet; retry once HA finishes setup
+            _LOGGER.debug(
+                '%s: Sensor add_entities not available yet, scheduling coordinate sensor setup',
+                self.name_model,
+            )
+            self.hass.loop.call_later(5, lambda: self.hass.async_create_task(
+                self._async_setup_coordinate_sensors()
+            ))
+            return
+
+        device_name = self.device_name
+
+        self._sensor_x = VacuumCoordinateSensor(
+            self,
+            'cleaning_path_x',
+            option={
+                'name': f'{device_name} Vacuum X Coordinate',
+                'unique_id': f'{self.unique_id}-cleaning_path_x',
+                'icon': 'mdi:axis-x-arrow',
+            },
+        )
+        self._sensor_y = VacuumCoordinateSensor(
+            self,
+            'cleaning_path_y',
+            option={
+                'name': f'{device_name} Vacuum Y Coordinate',
+                'unique_id': f'{self.unique_id}-cleaning_path_y',
+                'icon': 'mdi:axis-y-arrow',
+            },
+        )
+        self._sensor_rotation = VacuumCoordinateSensor(
+            self,
+            'cleaning_path_rotation',
+            option={
+                'name': f'{device_name} Vacuum Rotation',
+                'unique_id': f'{self.unique_id}-cleaning_path_rotation',
+                'icon': 'mdi:angle-acute',
+                'unit': 'rad',
+            },
+        )
+
+        add_sensors(
+            [self._sensor_x, self._sensor_y, self._sensor_rotation],
+            update_before_add=False,
+        )
+        _LOGGER.info('%s: Registered vacuum coordinate sensors', self.name_model)
+
+    async def _async_poll_cleaning_path(self):
+        """Background task: poll siid=10 piid=5 every 2 seconds while cleaning."""
+        _LOGGER.debug('%s: Starting cleaning path polling', self.name_model)
+        while self._path_polling_active:
+            try:
+                result = await self.async_get_properties(
+                    CLEANING_PATH_MAPPING,
+                    update_entity=False,
+                )
+                raw = None
+                if isinstance(result, dict):
+                    # Result is keyed by the mapping key ('data') or by the full property name
+                    raw = result.get('data') or next(iter(result.values()), None)
+
+                if raw is not None:
+                    x, y, rotation = _parse_cleaning_path(raw)
+                    if self._sensor_x is not None:
+                        self._sensor_x.set_value(x)
+                    if self._sensor_y is not None:
+                        self._sensor_y.set_value(y)
+                    if self._sensor_rotation is not None:
+                        self._sensor_rotation.set_value(rotation)
+                    _LOGGER.debug(
+                        '%s: Cleaning path update - x=%.4f y=%.4f rot=%.4f',
+                        self.name_model, x, y, rotation,
+                    )
+                else:
+                    _LOGGER.debug('%s: Cleaning path result empty: %s', self.name_model, result)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning('%s: Error polling cleaning path: %s', self.name_model, exc)
+
+            await asyncio.sleep(CLEANING_PATH_POLL_INTERVAL)
+
+        _LOGGER.debug('%s: Cleaning path polling stopped', self.name_model)
+
+    def _start_path_polling(self):
+        """Start the cleaning path background polling task."""
+        if self._path_polling_task and not self._path_polling_task.done():
+            return  # Already running
+        self._path_polling_active = True
+        self._path_polling_task = self.hass.async_create_task(
+            self._async_poll_cleaning_path()
+        )
+        _LOGGER.info('%s: Cleaning path polling started', self.name_model)
+
+    def _stop_path_polling(self):
+        """Stop the cleaning path background polling task."""
+        self._path_polling_active = False
+        if self._path_polling_task and not self._path_polling_task.done():
+            self._path_polling_task.cancel()
+            self._path_polling_task = None
+        _LOGGER.info('%s: Cleaning path polling stopped', self.name_model)
+
+    async def async_will_remove_from_hass(self):
+        self._stop_path_polling()
+
     async def async_update(self):
         await super().async_update()
         if not self._available:
@@ -141,6 +348,12 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
                 self._attr_activity = VacuumActivity.ERROR
             else:
                 self._attr_activity = VacuumActivity.IDLE
+
+        # Start or stop the cleaning path polling based on current activity
+        if self._attr_activity == VacuumActivity.CLEANING:
+            self._start_path_polling()
+        else:
+            self._stop_path_polling()
 
     async def async_turn_on(self, **kwargs):
         if self._prop_power:
