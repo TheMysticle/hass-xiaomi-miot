@@ -62,7 +62,7 @@ def _parse_cleaning_path(raw_data):
     """
     try:
         if isinstance(raw_data, str):
-            clean = raw_data.strip().strip('[]')
+            clean = raw_data.strip().replace('[', '').replace(']', '')
             parts = [p.strip() for p in clean.split(',') if p.strip()]
         elif isinstance(raw_data, (list, tuple)):
             parts = [str(p) for p in raw_data]
@@ -272,10 +272,21 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
                     CLEANING_PATH_MAPPING,
                     update_entity=False,
                 )
+                # Log the full raw result at warning level temporarily so it
+                # shows up easily in HA logs without needing debug mode enabled
+                _LOGGER.warning('%s: Cleaning path raw result: %s', self.name_model, result)
+
                 raw = None
                 if isinstance(result, dict):
-                    # Result is keyed by the mapping key ('data') or by the full property name
-                    raw = result.get('data') or next(iter(result.values()), None)
+                    # Try 'data' key first (matches our mapping key), then fall back
+                    # to any non-None value (key is typically the full miot property
+                    # name like 'robot_cleaner.cur_cleaning_path' etc.)
+                    raw = result.get('data')
+                    if raw is None:
+                        for v in result.values():
+                            if v is not None:
+                                raw = v
+                                break
 
                 if raw is not None:
                     x, y, rotation = _parse_cleaning_path(raw)
@@ -290,7 +301,10 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
                         self.name_model, x, y, rotation,
                     )
                 else:
-                    _LOGGER.debug('%s: Cleaning path result empty: %s', self.name_model, result)
+                    _LOGGER.warning(
+                        '%s: Cleaning path result had no usable value: %s',
+                        self.name_model, result,
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001
@@ -318,6 +332,12 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
             self._path_polling_task = None
         _LOGGER.info('%s: Cleaning path polling stopped', self.name_model)
 
+    def _reset_coordinate_sensors(self):
+        """Reset X, Y and rotation sensors to 0.0 when the vacuum is docked or idle."""
+        for sensor in (self._sensor_x, self._sensor_y, self._sensor_rotation):
+            if sensor is not None:
+                sensor.set_value(0.0)
+
     async def async_will_remove_from_hass(self):
         self._stop_path_polling()
 
@@ -331,7 +351,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
             if val is None:
                 pass
             elif val in self._prop_status.list_search(
-                'Cleaning', 'Sweeping', 'Mopping', 'Sweeping And Mopping', 'Washing', 'Go Washing',
+                'Cleaning', 'Sweeping', 'Small Sweeping', 'Mopping', 'Sweeping And Mopping', 'Washing', 'Go Washing',
                 'Part Sweeping', 'Zone Sweeping', 'Select Sweeping', 'Spot Sweeping', 'Goto Target',
                 'Starting', 'Working', 'Busy', 'DustCollecting'
             ):
@@ -349,11 +369,21 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
             else:
                 self._attr_activity = VacuumActivity.IDLE
 
-        # Start or stop the cleaning path polling based on current activity
-        if self._attr_activity == VacuumActivity.CLEANING:
+        # Poll while the vacuum is anywhere on the map (cleaning, returning, paused, error)
+        # Stop and reset to 0 when docked or idle (no meaningful position)
+        if self._attr_activity in (
+            VacuumActivity.CLEANING,
+            VacuumActivity.RETURNING,
+            VacuumActivity.PAUSED,
+            VacuumActivity.ERROR,
+        ):
             self._start_path_polling()
-        else:
+        elif self._attr_activity in (
+            VacuumActivity.DOCKED,
+            VacuumActivity.IDLE,
+        ):
             self._stop_path_polling()
+            self._reset_coordinate_sensors()
 
     async def async_turn_on(self, **kwargs):
         if self._prop_power:
