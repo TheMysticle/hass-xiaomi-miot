@@ -208,6 +208,9 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
         await self._async_setup_coordinate_sensors()
+        # Register a device listener so polling reacts immediately to
+        # status changes instead of waiting for the next update cycle
+        self.device.add_listener(self._on_device_status_update)
 
     async def _async_setup_coordinate_sensors(self):
         """Create and register the X, Y, and rotation coordinate sensors."""
@@ -338,7 +341,41 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
             if sensor is not None:
                 sensor.set_value(0.0)
 
+    def _on_device_status_update(self, data: dict, only_info=False):
+        """Called by the device whenever new data is dispatched.
+        Starts or stops path polling immediately when status changes,
+        without waiting for the next scheduled async_update cycle.
+        """
+        if only_info:
+            return
+        # The status property key varies by device spec; check both full and short names
+        status_keys = {'vacuum.status', 'status'}
+        if not status_keys & data.keys():
+            return
+        if not self._prop_status:
+            return
+        val = self._prop_status.from_device(self.device)
+        if val is None:
+            return
+        cleaning_vals = self._prop_status.list_search(
+            'Cleaning', 'Sweeping', 'Small Sweeping', 'Mopping', 'Sweeping And Mopping',
+            'Washing', 'Go Washing', 'Part Sweeping', 'Zone Sweeping', 'Select Sweeping',
+            'Spot Sweeping', 'Goto Target', 'Starting', 'Working', 'Busy', 'DustCollecting',
+            'Go Charging',  # returning
+            'Paused',
+            'Error', 'Charging Problem',
+        )
+        docked_vals = self._prop_status.list_search(
+            'Idle', 'Sleep', 'Charging', 'Charging Completed', 'Fullcharge', 'Charge Done', 'Drying',
+        )
+        if val in cleaning_vals:
+            self._start_path_polling()
+        elif val in docked_vals:
+            self._stop_path_polling()
+            self._reset_coordinate_sensors()
+
     async def async_will_remove_from_hass(self):
+        self.device.remove_listener(self._on_device_status_update)
         self._stop_path_polling()
 
     async def async_update(self):
