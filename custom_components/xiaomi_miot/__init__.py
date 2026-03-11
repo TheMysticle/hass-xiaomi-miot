@@ -182,7 +182,6 @@ async def async_setup(hass, hass_config: dict):
     config = hass_config.get(DOMAIN) or {}
 
     # Register custom Lovelace cards bundled with this integration
-    from homeassistant.components.frontend import async_register_extra_module_url
     from homeassistant.components.http import StaticPathConfig
     _www_dir = os.path.dirname(__file__) + '/www'
     if os.path.isdir(_www_dir):
@@ -191,8 +190,24 @@ async def async_setup(hass, hass_config: dict):
             StaticPathConfig(f'/xiaomi_miot/www/{f}', f'{_www_dir}/{f}', cache_headers=False)
             for f in js_files
         ])
-        for f in js_files:
-            async_register_extra_module_url(hass, f'/xiaomi_miot/www/{f}')
+        # Register as Lovelace resources via the frontend module — try both
+        # the old and new API names so this works across HA versions
+        try:
+            from homeassistant.components.frontend import async_register_extra_module_url
+            for f in js_files:
+                async_register_extra_module_url(hass, f'/xiaomi_miot/www/{f}')
+        except ImportError:
+            try:
+                from homeassistant.components.frontend import add_extra_js_url
+                for f in js_files:
+                    add_extra_js_url(hass, f'/xiaomi_miot/www/{f}')
+            except ImportError:
+                _LOGGER.warning(
+                    'xiaomi_miot: could not auto-register Lovelace cards — '
+                    'add /xiaomi_miot/www/xiaomi-static-map-card.js and '
+                    '/xiaomi_miot/www/xiaomi-vacuum-shortcuts.js manually '
+                    'in Settings → Dashboards → Resources'
+                )
 
     await async_reload_integration_config(hass, config)
 
