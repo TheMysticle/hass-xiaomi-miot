@@ -180,6 +180,20 @@ CONFIG_SCHEMA = vol.Schema(
 async def async_setup(hass, hass_config: dict):
     init_integration_data(hass)
     config = hass_config.get(DOMAIN) or {}
+
+    # Register custom Lovelace cards bundled with this integration
+    from homeassistant.components.frontend import async_register_extra_module_url
+    from homeassistant.components.http import StaticPathConfig
+    _www_dir = os.path.dirname(__file__) + '/www'
+    if os.path.isdir(_www_dir):
+        js_files = [f for f in os.listdir(_www_dir) if f.endswith('.js')]
+        await hass.http.async_register_static_paths([
+            StaticPathConfig(f'/xiaomi_miot/www/{f}', f'{_www_dir}/{f}', cache_headers=False)
+            for f in js_files
+        ])
+        for f in js_files:
+            async_register_extra_module_url(hass, f'/xiaomi_miot/www/{f}')
+
     await async_reload_integration_config(hass, config)
 
     def extend_miot_specs():
