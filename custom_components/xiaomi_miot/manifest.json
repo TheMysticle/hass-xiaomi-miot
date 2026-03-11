@@ -1,14 +1,19 @@
 {
   "domain": "xiaomi_miot",
   "name": "Xiaomi Miot",
-  "after_dependencies": ["homekit"],
-  "codeowners": ["@al-one"],
+  "after_dependencies": [
+    "homekit"
+  ],
+  "codeowners": [
+    "@al-one"
+  ],
   "config_flow": true,
   "dependencies": [
     "http",
     "intent",
     "persistent_notification",
-    "ffmpeg"
+    "ffmpeg",
+    "frontend"
   ],
   "documentation": "https://github.com/al-one/hass-xiaomi-miot",
   "iot_class": "cloud_polling",
@@ -18,5 +23,5 @@
     "python-miio>=0.5.12",
     "micloud>=0.5"
   ],
-  "version": "1.1.4"
+  "version": "1.1.6"
 }

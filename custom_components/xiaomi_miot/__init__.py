@@ -180,6 +180,83 @@ CONFIG_SCHEMA = vol.Schema(
 async def async_setup(hass, hass_config: dict):
     init_integration_data(hass)
     config = hass_config.get(DOMAIN) or {}
+
+    # Register custom Lovelace cards bundled with this integration.
+    # We serve the JS files over HTTP then inject them into Lovelace's own
+    # resource list (storage mode) so they appear as proper module resources.
+    # Registration is deferred until after HA has fully started so that the
+    # Lovelace resources collection is loaded and ready to accept writes.
+    from homeassistant.components.http import StaticPathConfig
+    from homeassistant.core import CoreState, EVENT_HOMEASSISTANT_STARTED
+    from homeassistant.helpers.event import async_call_later
+
+    _www_dir = os.path.dirname(__file__) + '/www'
+    _URL_BASE = '/xiaomi_miot/www'
+    # The two bundled JS files — listed explicitly to avoid a blocking listdir
+    # on the event loop.
+    _JS_MODULES = [
+        'xiaomi-static-map-card.js',
+        'xiaomi-vacuum-shortcuts.js',
+    ]
+
+    # 1. Register static HTTP paths (async, safe on the event loop).
+    try:
+        await hass.http.async_register_static_paths([
+            StaticPathConfig(f'{_URL_BASE}/{f}', f'{_www_dir}/{f}', False)
+            for f in _JS_MODULES
+            if os.path.isfile(f'{_www_dir}/{f}')
+        ])
+    except RuntimeError:
+        pass  # Already registered on a previous reload
+
+    # 2. Register as Lovelace module resources after startup.
+    # We defer until EVENT_HOMEASSISTANT_STARTED so the lovelace component
+    # has finished its own setup and populated hass.data["lovelace"].
+    async def _register_lovelace_resources(_event=None):
+        # Access lovelace here (deferred), not at async_setup time
+        lovelace = hass.data.get('lovelace')
+        if lovelace is None:
+            _LOGGER.warning(
+                'xiaomi_miot: hass.data["lovelace"] not found after startup — '
+                'cards must be added manually in Settings → Dashboards → Resources'
+            )
+            return
+
+        # lovelace.mode is "storage", "yaml", or "auto-gen"
+        # auto-gen behaves like storage so we allow both
+        if getattr(lovelace, 'mode', 'storage') == 'yaml':
+            _LOGGER.debug(
+                'xiaomi_miot: lovelace is in yaml mode, skipping auto resource registration'
+            )
+            return
+
+        async def _wait_and_register(_now=None):
+            resources = lovelace.resources
+            if not resources.loaded:
+                _LOGGER.debug('xiaomi_miot: lovelace resources not yet loaded, retrying in 5s')
+                async_call_later(hass, 5, _wait_and_register)
+                return
+            existing_urls = {
+                r['url'].split('?')[0]
+                for r in resources.async_items()
+            }
+            for f in _JS_MODULES:
+                url = f'{_URL_BASE}/{f}'
+                if url not in existing_urls:
+                    _LOGGER.info('xiaomi_miot: registering Lovelace resource %s', url)
+                    await resources.async_create_item({
+                        'res_type': 'module',
+                        'url': f'{url}?v=1',
+                    })
+                else:
+                    _LOGGER.debug('xiaomi_miot: Lovelace resource already registered: %s', url)
+
+        await _wait_and_register()
+
+    # Always defer to STARTED — even if HA is already running this is safe,
+    # and it guarantees the lovelace component data is ready.
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _register_lovelace_resources)
+
     await async_reload_integration_config(hass, config)
 
     def extend_miot_specs():
