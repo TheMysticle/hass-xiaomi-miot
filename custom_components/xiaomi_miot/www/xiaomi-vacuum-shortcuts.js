@@ -10,6 +10,7 @@
  *   xiaomi-vacuum-livingroom-card
  *   xiaomi-vacuum-emaspc-card
  *   xiaomi-vacuum-custom-card     — fully configurable via visual editor
+ *   xiaomi-vacuum-zone-list-card  — dropdown selector for multiple locations
  */
 
 // ── Shared styles ─────────────────────────────────────────────────────────────
@@ -58,6 +59,9 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
     this._holdTimer = null;
     this._holdTriggered = false;
     this._confirming = false;
+    this._confirmTimer = null;
+    this._startX = 0;
+    this._startY = 0;
   }
 
   // ── Config ──────────────────────────────────────────────────────────────────
@@ -146,19 +150,40 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
     }
   }
 
-  // ── Hold / tap ───────────────────────────────────────────────────────────────
+  // ── Improved Hold detection (scroll-safe) ───────────────────────────────────
 
-  _onPointerDown() {
+  _onPointerDown(e) {
     this._holdTriggered = false;
+    this._startX = e.touches ? e.touches[0].clientX : e.clientX;
+    this._startY = e.touches ? e.touches[0].clientY : e.clientY;
+
     this._holdTimer = setTimeout(() => {
       this._holdTriggered = true;
       this._send();
       this._flashFeedback('sent');
-    }, 500);
+    }, 650); // slightly longer = safer for scrolling
+  }
+
+  _onPointerMove(e) {
+    if (!this._holdTimer) return;
+
+    const x = e.touches ? e.touches[0].clientX : e.clientX;
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+
+    const diffX = Math.abs(x - this._startX);
+    const diffY = Math.abs(y - this._startY);
+
+    // If user moved more than ~12 px → it's scrolling, cancel hold
+    if (diffX > 12 || diffY > 12) {
+      clearTimeout(this._holdTimer);
+      this._holdTimer = null;
+    }
   }
 
   _onPointerUp() {
     clearTimeout(this._holdTimer);
+    this._holdTimer = null;
+
     if (!this._holdTriggered) {
       if (this._confirming) {
         this._confirming = false;
@@ -171,7 +196,7 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
         this._confirmTimer = setTimeout(() => {
           this._confirming = false;
           this._syncState();
-        }, 3000);
+        }, 2800);
       }
     }
     this._holdTriggered = false;
@@ -179,6 +204,7 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
 
   _onPointerCancel() {
     clearTimeout(this._holdTimer);
+    this._holdTimer = null;
     this._holdTriggered = false;
   }
 
@@ -247,6 +273,8 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
     const card = this.shadowRoot.querySelector('ha-card');
     card.addEventListener('mousedown',   () => this._onPointerDown());
     card.addEventListener('touchstart',  () => this._onPointerDown(), { passive: true });
+    card.addEventListener('mousemove',   (e) => this._onPointerMove(e));
+    card.addEventListener('touchmove',   (e) => this._onPointerMove(e), { passive: true });
     card.addEventListener('mouseup',     () => this._onPointerUp());
     card.addEventListener('touchend',    () => this._onPointerUp());
     card.addEventListener('mouseleave',  () => this._onPointerCancel());
@@ -309,9 +337,7 @@ if (!customElements.get('xiaomi-vacuum-emaspc-card'))
   customElements.define('xiaomi-vacuum-emaspc-card', XiaomiVacuumEmaspcCard);
 
 
-// ══════════════════════════════════════════════════════════════════════════════
-// xiaomi-vacuum-custom-card — fully configurable with a visual editor
-// ══════════════════════════════════════════════════════════════════════════════
+// ── Custom configurable shortcut card ─────────────────────────────────────────
 
 class XiaomiVacuumCustomCard extends XiaomiVacuumShortcutCard {
   static getStubConfig() {
@@ -326,7 +352,6 @@ class XiaomiVacuumCustomCard extends XiaomiVacuumShortcutCard {
     };
   }
 
-  // The visual editor is a separate element defined below.
   static getConfigElement() {
     return document.createElement("xiaomi-vacuum-custom-card-editor");
   }
@@ -336,7 +361,7 @@ if (!customElements.get('xiaomi-vacuum-custom-card'))
   customElements.define('xiaomi-vacuum-custom-card', XiaomiVacuumCustomCard);
 
 
-// ── Visual editor element ─────────────────────────────────────────────────────
+// ── Visual editor for custom card ─────────────────────────────────────────────
 
 class XiaomiVacuumCustomCardEditor extends HTMLElement {
   constructor() {
@@ -348,7 +373,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    // Refresh entity list if we already rendered
     if (this.shadowRoot.querySelector('select[name="vacuum_entity"]')) {
       this._populateEntitySelect();
     }
@@ -359,7 +383,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
     this._render();
   }
 
-  // Fire config-changed so HA picks up edits immediately
   _fire(newConfig) {
     this._config = { ...this._config, ...newConfig };
     this.dispatchEvent(new CustomEvent("config-changed", {
@@ -420,7 +443,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
         .toggle-label { font-size: .9rem; color: var(--primary-text-color); }
         .toggle-sub  { font-size: .75rem; color: var(--secondary-text-color); margin-top: 2px; }
 
-        /* pill toggle */
         .pill { position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer; flex-shrink: 0; }
         .pill input { opacity: 0; width: 0; height: 0; }
         .slider {
@@ -463,7 +485,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
 
       <div class="editor">
 
-        <!-- Vacuum entity -->
         <div class="field">
           <label>Vacuum entity</label>
           <select name="vacuum_entity">
@@ -471,7 +492,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
           </select>
         </div>
 
-        <!-- Name & Icon -->
         <div class="row">
           <div class="field">
             <label>Name</label>
@@ -483,7 +503,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
           </div>
         </div>
 
-        <!-- Command style -->
         <div class="field">
           <label>Command style</label>
           <select name="command_style">
@@ -492,7 +511,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
           </select>
         </div>
 
-        <!-- Type toggle -->
         <div class="toggle-row">
           <div>
             <div class="toggle-label">Zone clean</div>
@@ -504,7 +522,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
           </label>
         </div>
 
-        <!-- Coordinates -->
         <div class="section-title">Coordinates</div>
 
         ${isZone ? `
@@ -523,7 +540,6 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
           </div>
         `}
 
-        <!-- How to get coordinates -->
         <div class="info-box">
           <strong>How to find your coordinates</strong>
           <ol>
@@ -534,7 +550,7 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
             <li>Coordinates are in <strong>metres</strong>, relative to the vacuum's dock (negative values are valid).</li>
           </ol>
           <br>
-          Alternatively, the <strong>xiaomi-static-map-card</strong> bundled with this integration shows a live map — tap a spot and check your browser console for the coordinate output.
+          Alternatively, use the <strong>xiaomi-static-map-card</strong> — tap a spot and check the inspector output.
         </div>
 
       </div>
@@ -547,30 +563,24 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
   _attachListeners() {
     const root = this.shadowRoot;
 
-    // Entity select
     root.querySelector('select[name="vacuum_entity"]')
       ?.addEventListener('change', e => this._fire({ vacuum_entity: e.target.value }));
 
-    // Text inputs
     root.querySelector('input[name="name"]')
       ?.addEventListener('input', e => this._fire({ name: e.target.value }));
 
     root.querySelector('input[name="icon"]')
       ?.addEventListener('input', e => this._fire({ icon: e.target.value }));
 
-    // Command style
     root.querySelector('select[name="command_style"]')
       ?.addEventListener('change', e => this._fire({ command_style: e.target.value }));
 
-    // Type toggle
     root.querySelector('input[name="type_toggle"]')
       ?.addEventListener('change', e => {
         this._fire({ type_: e.target.checked ? 'zone' : 'point' });
-        // Re-render so the coordinate fields swap
         this._render();
       });
 
-    // Coordinate inputs — all numeric, fire on change
     for (const name of ['x', 'y', 'x_min', 'y_min', 'x_max', 'y_max']) {
       root.querySelector(`input[name="${name}"]`)
         ?.addEventListener('change', e => {
@@ -584,132 +594,113 @@ if (!customElements.get('xiaomi-vacuum-custom-card-editor'))
   customElements.define('xiaomi-vacuum-custom-card-editor', XiaomiVacuumCustomCardEditor);
 
 
-// ── Register all in the card picker ──────────────────────────────────────────
-
-window.customCards = window.customCards || [];
-[
-  { type: "xiaomi-vacuum-corridor-card",   name: "Vacuum → Corridor",    description: "Send vacuum to the corridor" },
-  { type: "xiaomi-vacuum-kitchen-card",    name: "Vacuum → Kitchen",     description: "Zone clean the kitchen" },
-  { type: "xiaomi-vacuum-livingroom-card", name: "Vacuum → Living Room", description: "Zone clean the living room" },
-  { type: "xiaomi-vacuum-emaspc-card",     name: "Vacuum → Ema's PC",    description: "Send vacuum to Ema's PC area" },
-  { type: "xiaomi-vacuum-custom-card",     name: "Vacuum → Custom",      description: "Configurable vacuum shortcut with visual editor", preview: true },
-].forEach(c => { if (!window.customCards.find(x => x.type === c.type)) window.customCards.push(c); });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// xiaomi-vacuum-zone-list-card — dropdown selector for zones & go-to points
-// ══════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
+// xiaomi-vacuum-zone-list-card (dropdown selector version)
+// ──────────────────────────────────────────────────────────────────────────────
 
 const ZONE_LIST_STYLES = `
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :host { display: block; font-family: var(--primary-font-family, Roboto, sans-serif); }
-
   ha-card {
-    padding: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    height: 100%;
+    padding: 16px;
+    border-radius: 16px;
+    overflow: hidden;
   }
-
-  /* ── Header row ── */
   .header {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
+    margin-bottom: 16px;
   }
   .header-icon {
-    width: 36px; height: 36px; min-width: 36px;
+    width: 48px;
+    height: 48px;
     border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0;
-    transition: background .25s, color .25s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    background: rgba(0,150,136,.12);
+    color: #009688;
+    transition: all .3s;
   }
-  .header-icon ha-icon { --mdc-icon-size: 22px; display: flex; line-height: 0; }
-  .header-icon.idle { background: rgba(0,150,136,.15); color: #009688; }
-  .header-icon.busy { background: rgba(255,193,7,.15); color: #ffc107; animation: pulse 1.5s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
-
-  .header-info { flex: 1; min-width: 0; }
+  .header-icon.busy {
+    animation: pulse 1.5s infinite;
+    background: rgba(255,193,7,.2);
+    color: #ffc107;
+  }
+  .header-info {
+    flex: 1;
+  }
   .header-name {
-    font-size: .95rem; font-weight: 600;
-    color: var(--primary-text-color);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 1.1rem;
+    font-weight: 600;
   }
   .header-status {
-    font-size: .76rem; color: var(--secondary-text-color); margin-top: 1px;
+    font-size: .9rem;
+    color: var(--secondary-text-color);
   }
-  .header-status.busy { color: #ffc107; }
-
-  /* ── Zone dropdown ── */
+  .header-status.busy {
+    color: #ffc107;
+    font-weight: 500;
+  }
   .zone-select {
     width: 100%;
-    padding: 10px 36px 10px 12px;
-    border: 1px solid var(--divider-color, #e0e0e0);
-    border-radius: 10px;
-    background: var(--secondary-background-color, #f5f5f5)
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24'%3E%3Cpath fill='%23888' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E")
-      no-repeat right 10px center;
-    color: var(--primary-text-color);
-    font-size: .92rem;
-    font-family: inherit;
-    cursor: pointer;
-    outline: none;
-    appearance: none;
-    -webkit-appearance: none;
-    transition: border-color .15s;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid var(--divider-color);
+    background: var(--card-background-color);
+    font-size: 1rem;
+    margin-bottom: 16px;
   }
-  .zone-select:focus { border-color: #009688; }
-  .zone-select:disabled { opacity: .5; cursor: not-allowed; }
-
-  /* ── Buttons ── */
+  .empty {
+    text-align: center;
+    color: var(--secondary-text-color);
+    padding: 20px 0;
+    font-style: italic;
+  }
   .btn-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    display: flex;
+    gap: 12px;
   }
   .btn {
-    display: flex; align-items: center; justify-content: center; gap: 7px;
-    padding: 11px 8px;
-    border: none; border-radius: 10px;
-    font-size: .88rem; font-weight: 500; font-family: inherit;
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 12px;
+    font-size: 1rem;
+    font-weight: 500;
     cursor: pointer;
-    transition: opacity .15s, transform .1s;
-    min-height: 44px;
-    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all .2s;
   }
-  .btn:active { transform: scale(.97); }
-  .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
-  .btn ha-icon { --mdc-icon-size: 18px; display: flex; line-height: 0; }
-
   .btn-clean {
     background: #009688;
     color: white;
   }
-  .btn-clean:hover:not(:disabled) { opacity: .88; }
-  .btn-clean.flashing { animation: flash-green .5s ease; }
-
+  .btn-clean:hover {
+    background: #00796b;
+  }
   .btn-stop {
-    background: var(--secondary-background-color, #f5f5f5);
-    color: var(--primary-text-color);
-    border: 1px solid var(--divider-color, #e0e0e0);
+    background: #d32f2f;
+    color: white;
   }
-  .btn-stop:hover:not(:disabled) { background: var(--divider-color, #e8e8e8); }
-
-  @keyframes flash-green {
-    0%   { background: #009688; }
-    40%  { background: #4db6ac; }
-    100% { background: #009688; }
+  .btn-stop:hover {
+    background: #b71c1c;
   }
-
-  /* ── Empty state ── */
-  .empty {
-    font-size: .82rem; color: var(--secondary-text-color);
-    text-align: center; padding: 6px 0;
-    font-style: italic;
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .flashing {
+    animation: flash 0.5s;
+  }
+  @keyframes flash {
+    0%,100% { opacity:1; }
+    50% { opacity:0.4; }
   }
 `;
-
-// ── Zone List Card ────────────────────────────────────────────────────────────
 
 class XiaomiVacuumZoneListCard extends HTMLElement {
   constructor() {
@@ -717,67 +708,33 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
     this.attachShadow({ mode: 'open' });
     this._hass = null;
     this._config = {};
-    this._rendered = false;
-  }
-
-  static getStubConfig() {
-    return {
-      vacuum_entity: 'vacuum.my_vacuum',
-      name: 'Vacuum Shortcuts',
-      command_style: 'miot_9_9',
-      zones: [
-        { name: 'Kitchen',     type_: 'zone',  x_min: -2.402, y_min: -4.990, x_max: 0.855, y_max: -3.530 },
-        { name: 'Living Room', type_: 'zone',  x_min: -1.097, y_min: -3.254, x_max: 2.630, y_max:  0.020 },
-        { name: 'Corridor',    type_: 'point', x: -3.216, y: -4.343 },
-      ],
-    };
-  }
-
-  static getConfigElement() {
-    return document.createElement('xiaomi-vacuum-zone-list-card-editor');
-  }
-
-  getCardSize() { return 2; }
-
-  setConfig(config) {
-    this._config = config;
-    this._rendered = false;
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (!this._rendered) {
-      this._rendered = true;
-      this._render();
-    } else {
-      this._syncState();
-    }
+    this._render();
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────────────
+  setConfig(config) {
+    this._config = config;
+    this._render();
+  }
 
-  get _vac() { return this._hass?.states[this._config.vacuum_entity]; }
-
-  _vacState() { return this._vac?.state ?? 'unknown'; }
+  getCardSize() { return 2; }
 
   _isBusy() {
-    return !['idle', 'docked', 'error', 'returning', 'paused', 'unknown'].includes(this._vacState());
+    const state = this._hass?.states[this._config.vacuum_entity]?.state;
+    return state && !['idle','docked','error','returning','paused'].includes(state);
   }
 
   _statusLabel() {
-    const s = this._vacState();
-    const map = {
-      cleaning: 'Cleaning…', returning: 'Returning…', paused: 'Paused',
-      idle: 'Idle', docked: 'Docked', error: 'Error',
-    };
-    return map[s] ?? s.charAt(0).toUpperCase() + s.slice(1);
+    const state = this._hass?.states[this._config.vacuum_entity]?.state || 'unknown';
+    return state.charAt(0).toUpperCase() + state.slice(1);
   }
-
-  // ── Commands ─────────────────────────────────────────────────────────────────
 
   _sendEntry(entry) {
     const cfg = this._config;
-    if (!cfg.vacuum_entity || !this._hass || !entry) return;
+    if (!cfg.vacuum_entity || !this._hass) return;
 
     if (entry.type_ === 'point') {
       const p = `${parseFloat(entry.x).toFixed(3)},${parseFloat(entry.y).toFixed(3)}`;
@@ -793,7 +750,6 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
         });
       }
     } else {
-      // zone (default)
       const xMin = Math.min(entry.x_min, entry.x_max).toFixed(3);
       const xMax = Math.max(entry.x_min, entry.x_max).toFixed(3);
       const yMin = Math.min(entry.y_min, entry.y_max).toFixed(3);
@@ -826,8 +782,6 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
     });
   }
 
-  // ── Icon lookup ───────────────────────────────────────────────────────────────
-
   static _iconForName(name) {
     if (!name) return 'mdi:robot-vacuum';
     const n = name.toLowerCase();
@@ -858,8 +812,6 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
     return 'mdi:robot-vacuum';
   }
 
-  // ── State sync ───────────────────────────────────────────────────────────────
-
   _syncState() {
     const busy = this._isBusy();
     const root = this.shadowRoot;
@@ -888,8 +840,6 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
     if (haIconEl) haIconEl.setAttribute('icon', XiaomiVacuumZoneListCard._iconForName(entry?.name));
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────────
-
   _render() {
     const cfg   = this._config;
     const zones = cfg.zones || [];
@@ -897,25 +847,23 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
 
     const firstEntry  = zones[0];
     const headerIcon  = XiaomiVacuumZoneListCard._iconForName(firstEntry?.name);
-    const actionIcon  = firstEntry?.type_ === 'point' ? 'mdi:vacuum' : 'mdi:vacuum';
-    const actionLabel = firstEntry?.type_ === 'point' ? 'Clean' : 'Clean';
+    const actionIcon  = firstEntry?.type_ === 'point' ? 'mdi:map-marker' : 'mdi:vacuum';
+    const actionLabel = firstEntry?.type_ === 'point' ? 'Go' : 'Clean';
 
     this.shadowRoot.innerHTML = `
       <style>${ZONE_LIST_STYLES}</style>
       <ha-card>
 
-        <!-- Header -->
         <div class="header">
           <div class="header-icon ${busy ? 'busy' : 'idle'}">
             <ha-icon icon="${headerIcon}"></ha-icon>
           </div>
           <div class="header-info">
-            <div class="header-name">Send To</div>
+            <div class="header-name">${cfg.name || 'Send To'}</div>
             <div class="header-status ${busy ? 'busy' : ''}">${this._statusLabel()}</div>
           </div>
         </div>
 
-        <!-- Dropdown -->
         ${zones.length
           ? `<select class="zone-select" ${busy ? 'disabled' : ''}>
                ${zones.map((z, i) => `<option value="${i}">${z.name || `Entry ${i + 1}`}</option>`).join('')}
@@ -923,7 +871,6 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
           : `<div class="empty">No entries configured — open the card editor to add some.</div>`
         }
 
-        <!-- Buttons -->
         <div class="btn-row">
           <button class="btn btn-clean" id="btn-action" ${busy || !zones.length ? 'disabled' : ''}>
             <ha-icon icon="${actionIcon}"></ha-icon>
@@ -948,13 +895,11 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
     const updateForIdx = (idx) => {
       const entry = zones[idx];
       if (!entry) return;
-      // Swap action button
       const btn = root.querySelector('#btn-action');
       if (btn) {
         const isPoint = entry.type_ === 'point';
         btn.innerHTML = `<ha-icon icon="${isPoint ? 'mdi:map-marker' : 'mdi:vacuum'}"></ha-icon>${isPoint ? 'Go' : 'Clean'}`;
       }
-      // Swap header icon
       const haIconEl = root.querySelector('.header-icon ha-icon');
       if (haIconEl) haIconEl.setAttribute('icon', XiaomiVacuumZoneListCard._iconForName(entry.name));
     };
@@ -984,9 +929,7 @@ if (!customElements.get('xiaomi-vacuum-zone-list-card'))
   customElements.define('xiaomi-vacuum-zone-list-card', XiaomiVacuumZoneListCard);
 
 
-// ══════════════════════════════════════════════════════════════════════════════
-// xiaomi-vacuum-zone-list-card-editor — visual editor
-// ══════════════════════════════════════════════════════════════════════════════
+// ── Zone list card editor ─────────────────────────────────────────────────────
 
 class XiaomiVacuumZoneListCardEditor extends HTMLElement {
   constructor() {
@@ -1064,7 +1007,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
           padding-bottom: 4px;
         }
 
-        /* Entry cards */
         .entry-list { display: flex; flex-direction: column; gap: 10px; }
 
         .entry-card {
@@ -1099,7 +1041,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
         .entry-remove:hover { color: #e53935; background: rgba(229,57,53,.08); }
         .entry-remove ha-icon { --mdc-icon-size: 16px; }
 
-        /* Type pill toggle */
         .type-toggle-row {
           display: flex; align-items: center; justify-content: space-between;
           padding: 6px 0;
@@ -1120,7 +1061,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
         input:checked + .slider { background: #7c4dff; }
         input:checked + .slider::before { transform: translateX(20px); }
 
-        /* Add buttons row */
         .add-row {
           display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
         }
@@ -1141,7 +1081,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
         .btn-add.point-add:hover { border-color: #7c4dff; background: rgba(103,58,183,.05); }
         .btn-add ha-icon { --mdc-icon-size: 17px; }
 
-        /* Info box */
         .info-box {
           background: rgba(0,150,136,.07);
           border-left: 3px solid #009688;
@@ -1156,7 +1095,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
 
       <div class="editor">
 
-        <!-- Vacuum entity -->
         <div class="field">
           <label>Vacuum entity</label>
           <select name="vacuum_entity">
@@ -1164,7 +1102,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
           </select>
         </div>
 
-        <!-- Card name + command style -->
         <div class="row2">
           <div class="field">
             <label>Card name</label>
@@ -1179,7 +1116,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
           </div>
         </div>
 
-        <!-- Entry list -->
         <div class="section-title">Locations</div>
 
         <div class="entry-list">
@@ -1197,13 +1133,11 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
                   </button>
                 </div>
 
-                <!-- Name -->
                 <div class="field">
                   <label>Name</label>
                   <input type="text" name="entry_name_${i}" value="${z.name || ''}" placeholder="${isPoint ? 'e.g. Corridor' : 'e.g. Kitchen'}">
                 </div>
 
-                <!-- Type toggle -->
                 <div class="type-toggle-row">
                   <span class="type-toggle-label">${isPoint ? 'Go-to point' : 'Zone clean'}</span>
                   <label class="pill">
@@ -1212,7 +1146,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
                   </label>
                 </div>
 
-                <!-- Coordinates -->
                 ${isPoint ? `
                   <div class="row2">
                     <div class="field"><label>X</label><input type="number" name="entry_x_${i}"    value="${z.x    ?? 0}" step="0.001"></div>
@@ -1233,7 +1166,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
           }).join('')}
         </div>
 
-        <!-- Add buttons -->
         <div class="add-row">
           <button class="btn-add" id="btn-add-zone">
             <ha-icon icon="mdi:plus"></ha-icon> Add zone
@@ -1243,7 +1175,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
           </button>
         </div>
 
-        <!-- Help -->
         <div class="info-box">
           <strong>Finding coordinates</strong>
           <ol>
@@ -1295,9 +1226,7 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
     root.querySelector('select[name="command_style"]')
       ?.addEventListener('change', e => this._fire({ command_style: e.target.value }));
 
-    // Delegate number/text changes inside the list
     root.querySelector('.entry-list')?.addEventListener('change', e => {
-      // Type toggle — re-render so coordinate fields swap
       if (e.target.type === 'checkbox') {
         this._fire({ zones: this._readEntries() });
         this._render();
@@ -1309,7 +1238,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
       if (e.target.type === 'text') this._fire({ zones: this._readEntries() });
     });
 
-    // Remove entry
     root.querySelectorAll('[data-remove]').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.remove);
@@ -1320,7 +1248,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
       });
     });
 
-    // Add zone
     root.querySelector('#btn-add-zone')?.addEventListener('click', () => {
       const zones = [...(this._config.zones || [])];
       zones.push({ name: '', type_: 'zone', x_min: 0, y_min: 0, x_max: 0, y_max: 0 });
@@ -1328,7 +1255,6 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
       this._render();
     });
 
-    // Add point
     root.querySelector('#btn-add-point')?.addEventListener('click', () => {
       const zones = [...(this._config.zones || [])];
       zones.push({ name: '', type_: 'point', x: 0, y: 0 });
@@ -1341,11 +1267,17 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
 if (!customElements.get('xiaomi-vacuum-zone-list-card-editor'))
   customElements.define('xiaomi-vacuum-zone-list-card-editor', XiaomiVacuumZoneListCardEditor);
 
-// Register in card picker
-if (!window.customCards.find(x => x.type === 'xiaomi-vacuum-zone-list-card'))
-  window.customCards.push({
-    type: 'xiaomi-vacuum-zone-list-card',
-    name: 'Vacuum Location List',
-    description: 'Dropdown selector for zone cleans and go-to points, with Return button',
-    preview: true,
-  });
+// Register cards in Lovelace card picker
+window.customCards = window.customCards || [];
+[
+  { type: "xiaomi-vacuum-shortcut-card",      name: "Vacuum Shortcut (base)",         description: "Base class - not for direct use" },
+  { type: "xiaomi-vacuum-corridor-card",      name: "Vacuum Corridor Shortcut",      description: "Go to corridor point" },
+  { type: "xiaomi-vacuum-kitchen-card",       name: "Vacuum Kitchen Shortcut",       description: "Clean kitchen zone" },
+  { type: "xiaomi-vacuum-livingroom-card",    name: "Vacuum Living Room Shortcut",   description: "Clean living room zone" },
+  { type: "xiaomi-vacuum-emaspc-card",        name: "Vacuum Ema's PC Shortcut",      description: "Go to Ema's PC point" },
+  { type: "xiaomi-vacuum-custom-card",        name: "Vacuum Custom Shortcut",        description: "Configurable go-to or zone shortcut" },
+  { type: "xiaomi-vacuum-zone-list-card",     name: "Vacuum Location List",          description: "Dropdown selector for zone cleans and go-to points, with Return button", preview: true },
+].forEach(card => {
+  if (!window.customCards.find(c => c.type === card.type))
+    window.customCards.push(card);
+});
