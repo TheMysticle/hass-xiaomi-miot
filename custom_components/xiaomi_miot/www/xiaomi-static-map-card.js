@@ -217,18 +217,36 @@ class XiaomiStaticMapCard extends LitElement {
   }
 
   // ── Hold detection ────────────────────────────────────────────────────────────
+  // Uses a 10px movement threshold to distinguish scroll from tap/hold.
 
   _onPointerDown(e) {
+    const t = e.touches?.[0] ?? e;
+    this._startX = t.clientX;
+    this._startY = t.clientY;
+    this._scrollCancelled = false;
     this._holdTriggered = false;
     this._holdTimer = setTimeout(() => {
+      if (this._scrollCancelled) return;
       this._holdTriggered = true;
       this._popupOpen = true;
     }, 500);
   }
 
+  _onPointerMove(e) {
+    if (this._scrollCancelled || (!this._holdTimer && !this._holdTriggered)) return;
+    const t = e.touches?.[0] ?? e;
+    const dx = t.clientX - this._startX;
+    const dy = t.clientY - this._startY;
+    if (Math.sqrt(dx * dx + dy * dy) > 10) {
+      clearTimeout(this._holdTimer);
+      this._holdTimer = null;
+      this._scrollCancelled = true;
+    }
+  }
+
   _onPointerUp(e) {
     clearTimeout(this._holdTimer);
-    if (!this._holdTriggered) {
+    if (!this._holdTriggered && !this._scrollCancelled) {
       // Short tap = start / stop toggle
       const vac = this.hass?.states[this.config.vacuum_entity];
       if (vac) {
@@ -237,11 +255,13 @@ class XiaomiStaticMapCard extends LitElement {
       }
     }
     this._holdTriggered = false;
+    this._scrollCancelled = false;
   }
 
   _onPointerCancel() {
     clearTimeout(this._holdTimer);
     this._holdTriggered = false;
+    this._scrollCancelled = false;
   }
 
   // ── Map interaction ───────────────────────────────────────────────────────────
@@ -395,6 +415,8 @@ class XiaomiStaticMapCard extends LitElement {
       <ha-card id="main-card"
         @mousedown="${this._onPointerDown}"
         @touchstart="${this._onPointerDown}"
+        @mousemove="${this._onPointerMove}"
+        @touchmove="${this._onPointerMove}"
         @mouseup="${this._onPointerUp}"
         @touchend="${this._onPointerUp}"
         @mouseleave="${this._onPointerCancel}"

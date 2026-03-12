@@ -147,19 +147,37 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
   }
 
   // ── Hold / tap ───────────────────────────────────────────────────────────────
+  // Uses a 10px movement threshold to distinguish scroll from tap/hold.
 
-  _onPointerDown() {
+  _onPointerDown(e) {
+    const t = e.touches?.[0] ?? e;
+    this._startX = t.clientX;
+    this._startY = t.clientY;
+    this._scrollCancelled = false;
     this._holdTriggered = false;
     this._holdTimer = setTimeout(() => {
+      if (this._scrollCancelled) return;
       this._holdTriggered = true;
       this._send();
       this._flashFeedback('sent');
     }, 500);
   }
 
-  _onPointerUp() {
+  _onPointerMove(e) {
+    if (this._scrollCancelled || (!this._holdTimer && !this._holdTriggered)) return;
+    const t = e.touches?.[0] ?? e;
+    const dx = t.clientX - this._startX;
+    const dy = t.clientY - this._startY;
+    if (Math.sqrt(dx * dx + dy * dy) > 10) {
+      clearTimeout(this._holdTimer);
+      this._holdTimer = null;
+      this._scrollCancelled = true;
+    }
+  }
+
+  _onPointerUp(e) {
     clearTimeout(this._holdTimer);
-    if (!this._holdTriggered) {
+    if (!this._holdTriggered && !this._scrollCancelled) {
       if (this._confirming) {
         this._confirming = false;
         this._send();
@@ -175,11 +193,13 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
       }
     }
     this._holdTriggered = false;
+    this._scrollCancelled = false;
   }
 
   _onPointerCancel() {
     clearTimeout(this._holdTimer);
     this._holdTriggered = false;
+    this._scrollCancelled = false;
   }
 
   _flashFeedback(type) {
@@ -213,7 +233,7 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
         badge.textContent = 'Tap again to confirm';
         badge.classList.add('confirming');
       } else {
-        badge.textContent = cfg.type_ === 'zone' ? 'Zone clean' : 'Go to point';
+        badge.textContent = 'Clean';
         badge.classList.remove('confirming');
       }
     }
@@ -227,7 +247,7 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
 
   _render() {
     const cfg = this._config;
-    const typeLabel = cfg.type_ === 'zone' ? 'Zone clean' : 'Go to point';
+    const typeLabel = 'Clean';
     const icon = cfg.icon || 'mdi:robot-vacuum';
 
     this.shadowRoot.innerHTML = `
@@ -245,8 +265,10 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
     `;
 
     const card = this.shadowRoot.querySelector('ha-card');
-    card.addEventListener('mousedown',   () => this._onPointerDown());
-    card.addEventListener('touchstart',  () => this._onPointerDown(), { passive: true });
+    card.addEventListener('mousedown',   e => this._onPointerDown(e));
+    card.addEventListener('touchstart',  e => this._onPointerDown(e), { passive: true });
+    card.addEventListener('mousemove',   e => this._onPointerMove(e));
+    card.addEventListener('touchmove',   e => this._onPointerMove(e), { passive: true });
     card.addEventListener('mouseup',     () => this._onPointerUp());
     card.addEventListener('touchend',    () => this._onPointerUp());
     card.addEventListener('mouseleave',  () => this._onPointerCancel());
