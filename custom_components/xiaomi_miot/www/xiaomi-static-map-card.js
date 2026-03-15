@@ -769,12 +769,13 @@ class XiaomiStaticMapCard extends LitElement {
         padding: 0;
         display: flex; flex-direction: column;
         cursor: pointer; user-select: none; -webkit-user-select: none;
-        min-height: 56px; height: auto; overflow: hidden;
+        height: 100% !important; /* Force respect grid height */
+        min-height: 56px; overflow: hidden;
         transition: box-shadow .15s;
       }
       .mush-chip-row {
         display: flex; align-items: center; gap: 10px;
-        padding: 10px; min-height: 56px; width: 100%;
+        padding: 8px 10px; flex: 1; min-height: 0; width: 100%;
       }
 
       .mush-icon {
@@ -932,8 +933,8 @@ class XiaomiStaticMapCard extends LitElement {
       /* ── Details row (fan speed + mode) ── */
       .mush-details-row {
         display: flex; align-items: center; gap: 8px;
-        width: 100%; padding: 0 10px 10px;
-        min-height: 56px; box-sizing: border-box;
+        width: 100%; padding: 0 10px 8px;
+        flex: 1; min-height: 0; box-sizing: border-box;
       }
       .mush-detail-item {
         display: flex; align-items: center; gap: 5px;
