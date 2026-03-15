@@ -30,6 +30,7 @@ class XiaomiStaticMapCardEditor extends LitElement {
         <ha-textfield label="Image URL" .value="${image || ''}" .configValue="${"image"}" @input="${this._val}"></ha-textfield>
         <ha-selector label="Vacuum" .hass="${this.hass}" .selector="${{entity:{domain:"vacuum"}}}" .value="${this.config.vacuum_entity}" .configValue="${"vacuum_entity"}" @value-changed="${this._val}"></ha-selector>
         <ha-selector label="Status sensor (optional, instant updates)" .hass="${this.hass}" .selector="${{entity:{domain:"sensor"}}}" .value="${this.config.status_sensor||''}" .configValue="${"status_sensor"}" @value-changed="${this._val}"></ha-selector>
+        <ha-selector label="Cleaning target sensor (optional, zone/point overlay)" .hass="${this.hass}" .selector="${{entity:{domain:"sensor"}}}" .value="${this.config.target_sensor||''}" .configValue="${"target_sensor"}" @value-changed="${this._val}"></ha-selector>
         <div class="sec" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
           <span style="font-size:.9rem;">Show fan speed &amp; mode on card</span>
           <ha-switch .checked="${this.config.show_extra_info||false}" @change="${(e)=>this._save({show_extra_info:e.target.checked})}"></ha-switch>
@@ -216,7 +217,7 @@ class XiaomiStaticMapCard extends LitElement {
   static getStubConfig() {
     return {
       image: "/local/floorplan.png",
-      vacuum_entity: "", status_sensor: "", x_sensor: "", y_sensor: "", rotation_sensor: "",
+      vacuum_entity: "", status_sensor: "", target_sensor: "", x_sensor: "", y_sensor: "", rotation_sensor: "",
       show_extra_info: false, fan_speed_entity: "", mode_entity: "",
       scale_width_percent_per_meter: 0, aspect_ratio: 1,
       dock: { x: 50, y: 50 }, ref_vector: { x: 0, y: 0 },
@@ -509,6 +510,46 @@ class XiaomiStaticMapCard extends LitElement {
       zoneConfirmBtn = html`<div class="zone-go-container" style="left:${left+width/2}%;top:${top+height/2}%;"><button class="zone-go-btn" @click="${(e)=>this._sendZoneClick(e)}" @touchstart="${(e)=>this._sendZoneClick(e)}">START ZONE</button></div>`;
     }
 
+    // Active cleaning target overlay (from target sensor)
+    let activeTargetOverlay = html``;
+    const targetSensorId = this.config.target_sensor;
+    if (targetSensorId) {
+      const tState = this.hass.states[targetSensorId];
+      const tRaw = tState?.state;
+      if (tRaw && tRaw !== 'none') {
+        try {
+          const activeTarget = JSON.parse(tRaw);
+          if (activeTarget.type === 'zone') {
+            // Map all four corners through calculateRobotPosition, then find bounding box in % space
+            const tl = this.calculateRobotPosition(activeTarget.x_min, activeTarget.y_min);
+            const tr = this.calculateRobotPosition(activeTarget.x_max, activeTarget.y_min);
+            const bl = this.calculateRobotPosition(activeTarget.x_min, activeTarget.y_max);
+            const br = this.calculateRobotPosition(activeTarget.x_max, activeTarget.y_max);
+            const lefts = [tl.left, tr.left, bl.left, br.left];
+            const tops  = [tl.top,  tr.top,  bl.top,  br.top];
+            const zLeft   = Math.min(...lefts);
+            const zTop    = Math.min(...tops);
+            const zWidth  = Math.max(...lefts) - zLeft;
+            const zHeight = Math.max(...tops)  - zTop;
+            activeTargetOverlay = html`<div class="active-target-zone" style="left:${zLeft}%;top:${zTop}%;width:${zWidth}%;height:${zHeight}%;"></div>`;
+          } else if (activeTarget.type === 'point') {
+            // Standard 1.5 m square centred on goto point
+            const pTL = this.calculateRobotPosition(activeTarget.x - 0.75, activeTarget.y - 0.75);
+            const pBR = this.calculateRobotPosition(activeTarget.x + 0.75, activeTarget.y + 0.75);
+            const pLeft   = Math.min(pTL.left, pBR.left);
+            const pTop    = Math.min(pTL.top,  pBR.top);
+            const pWidth  = Math.abs(pBR.left - pTL.left);
+            const pHeight = Math.abs(pBR.top  - pTL.top);
+            const center  = this.calculateRobotPosition(activeTarget.x, activeTarget.y);
+            activeTargetOverlay = html`
+              <div class="active-target-point" style="left:${pLeft}%;top:${pTop}%;width:${pWidth}%;height:${pHeight}%;"></div>
+              <div class="active-target-pin" style="left:${center.left}%;top:${center.top}%;"></div>
+            `;
+          }
+        } catch(e) { /* malformed JSON - ignore */ }
+      }
+    }
+
     return html`
       <!-- ── Mushroom-style compact chip ── -->
       <ha-card id="main-card" class="${showExtra ? 'expanded' : ''}"
@@ -636,6 +677,8 @@ class XiaomiStaticMapCard extends LitElement {
                   const h=Math.abs(this._click1.top-this._click2.top);
                   return html`<div style="position:absolute;left:${l}%;top:${t}%;width:${w}%;height:${h}%;border:2px dashed #a78bfa;background:rgba(167,139,250,.15);pointer-events:none;z-index:5;"></div>`;
                 })() : ''}
+
+                ${activeTargetOverlay}
 
                 <div class="vacuum-marker" style="top:${robotPos.top}%;left:${robotPos.left}%;transform:${robotTransform};">
                   <ha-icon icon="mdi:robot-vacuum"></ha-icon>
@@ -931,6 +974,42 @@ class XiaomiStaticMapCard extends LitElement {
       .insp-hint { font-size: .68rem; color: rgba(255,255,255,.4); margin-top: 6px; }
       .insp-clear-btn { margin-top: 10px; width: 100%; background: rgba(255,255,255,.08); color: rgba(255,255,255,.7); border: none; border-radius: 8px; padding: 8px; font-size: .8rem; cursor: pointer; }
       .insp-clear-btn:hover { background: rgba(255,255,255,.14); }
+
+      /* Active cleaning target overlays */
+      .active-target-zone {
+        position: absolute;
+        border: 2px solid rgba(33,150,243,0.9);
+        background: rgba(33,150,243,0.18);
+        pointer-events: none;
+        z-index: 4;
+        border-radius: 3px;
+        animation: target-pulse 2s ease-in-out infinite;
+      }
+      .active-target-point {
+        position: absolute;
+        border: 2px solid rgba(33,150,243,0.9);
+        background: rgba(33,150,243,0.18);
+        pointer-events: none;
+        z-index: 4;
+        border-radius: 3px;
+        animation: target-pulse 2s ease-in-out infinite;
+      }
+      .active-target-pin {
+        position: absolute;
+        width: 12px; height: 12px;
+        background: #2196F3;
+        border: 2px solid white;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        z-index: 5;
+        box-shadow: 0 0 8px rgba(33,150,243,0.8);
+        animation: target-pulse 2s ease-in-out infinite;
+      }
+      @keyframes target-pulse {
+        0%, 100% { opacity: 1; }
+        50%       { opacity: 0.45; }
+      }
     `;
   }
 }

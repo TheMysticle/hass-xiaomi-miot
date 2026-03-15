@@ -116,6 +116,64 @@ class VacuumCoordinateSensor(BaseSubEntity, SensorBaseEntity):
         pass
 
 
+class VacuumTargetSensor(BaseSubEntity, SensorBaseEntity):
+    """Sensor that holds the last-sent cleaning target (zone or goto-point) as JSON.
+
+    State is ``"none"`` when the vacuum is idle/docked, otherwise a JSON string:
+      * Zone clean:  ``{"type":"zone","x_min":-2.4,"y_min":-5.0,"x_max":0.85,"y_max":-3.5}``
+      * Goto point:  ``{"type":"point","x":-3.2,"y":-4.3}``
+    """
+
+    def __init__(self, parent, option=None):
+        kwargs = {'domain': 'sensor'}
+        super().__init__(parent, 'vacuum_cleaning_target', option, **kwargs)
+        self._attr_state_class = None
+        self._attr_state = 'none'
+        self._available = True
+
+    @property
+    def native_value(self):
+        return self._attr_state
+
+    @property
+    def available(self):
+        return self._parent.available
+
+    def set_target(self, value: str):
+        """Update the target JSON string and push state."""
+        self._attr_state = value
+        self._available = True
+        # Notify parent to record when the target was last set (for grace period)
+        if hasattr(self._parent, '_target_set_time'):
+            import time
+            self._parent._target_set_time = time.monotonic()
+        # Schedule state push on next event loop tick to avoid blocking the service call chain
+        if self.hass:
+            self.hass.loop.call_soon(
+                lambda: self.hass.async_create_task(self._async_push_state())
+            )
+
+    async def _async_push_state(self):
+        """Push updated state to HA asynchronously."""
+        if self.hass:
+            self.schedule_update_ha_state(force_refresh=False)
+
+    def clear_target(self):
+        """Clear the target (vacuum returned to idle/dock)."""
+        if self._attr_state != 'none':
+            self._attr_state = 'none'
+            if self.hass and self.platform:
+                self.schedule_update_ha_state()
+
+    def update(self, data=None):
+        """Override to avoid wiping state from parent attrs."""
+        pass
+
+    async def async_update(self):
+        """No polling; state is pushed from the parent vacuum entity."""
+        pass
+
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     HassEntry.init(hass, config_entry).new_adder(ENTITY_DOMAIN, async_add_entities)
     await async_setup_config_entry(hass, config_entry, async_setup_platform, async_add_entities, ENTITY_DOMAIN)
@@ -201,8 +259,11 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         self._sensor_x: VacuumCoordinateSensor = None
         self._sensor_y: VacuumCoordinateSensor = None
         self._sensor_rotation: VacuumCoordinateSensor = None
+        self._sensor_target: VacuumTargetSensor = None
         self._path_polling_task: asyncio.Task = None
         self._path_polling_active = False
+        self._call_service_unsub = None
+        self._target_set_time: float = 0.0
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
@@ -210,6 +271,10 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         # Register a device listener so polling reacts immediately to
         # status changes instead of waiting for the next update cycle
         self.device.add_listener(self._on_device_status_update)
+        # Listen for service calls so we can capture cleaning targets immediately
+        self._call_service_unsub = self.hass.bus.async_listen(
+            'call_service', self._on_call_service_event
+        )
 
     async def _async_setup_coordinate_sensors(self):
         """Create and register the X, Y, and rotation coordinate sensors."""
@@ -258,9 +323,17 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
                 'unit': 'rad',
             },
         )
+        self._sensor_target = VacuumTargetSensor(
+            self,
+            option={
+                'name': f'{device_name} Vacuum Cleaning Target',
+                'unique_id': f'{self.unique_id}-vacuum_cleaning_target',
+                'icon': 'mdi:target',
+            },
+        )
 
         add_sensors(
-            [self._sensor_x, self._sensor_y, self._sensor_rotation],
+            [self._sensor_x, self._sensor_y, self._sensor_rotation, self._sensor_target],
             update_before_add=False,
         )
         _LOGGER.info('%s: Registered vacuum coordinate sensors', self.name_model)
@@ -324,10 +397,155 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         _LOGGER.info('%s: Cleaning path polling stopped', self.name_model)
 
     def _reset_coordinate_sensors(self):
-        """Reset X, Y and rotation sensors to 0.0 when the vacuum is docked or idle."""
+        """Reset X, Y and rotation sensors to 0.0 and clear target when the vacuum is docked or idle.
+        A 5-second grace period after set_target prevents premature clearing while the
+        vacuum status transitions from idle/charging to cleaning.
+        """
         for sensor in (self._sensor_x, self._sensor_y, self._sensor_rotation):
             if sensor is not None:
                 sensor.set_value(0.0)
+        if self._sensor_target is not None:
+            import time
+            if time.monotonic() - self._target_set_time > 5.0:
+                self._sensor_target.clear_target()
+
+    def _on_call_service_event(self, event):
+        """Listen to HA service calls to capture cleaning targets.
+
+        Handles:
+          * xiaomi_miot.call_action  aiid=8 (zone clean) / aiid=9 (goto target)
+          * vacuum.send_command       app_zoned_clean / app_goto_target
+
+        HA fires a 'call_service' event on the bus for every service call.
+        The entity_id may appear in service_data OR in the newer 'target' dict,
+        and may be a string or a list in either case.
+        """
+        domain = event.data.get('domain', '')
+        service = event.data.get('service', '')
+        service_data = event.data.get('service_data', {}) or {}
+
+        # Only care about relevant domains/services to avoid noise
+        if domain == 'xiaomi_miot' and service == 'call_action':
+            pass
+        elif domain == 'vacuum' and service in ('send_command', 'clean_spot'):
+            pass
+        else:
+            return
+
+        # ── Resolve entity_id ──
+        raw_eid = service_data.get('entity_id') or (event.data.get('target') or {}).get('entity_id')
+        if raw_eid is None:
+            return
+        if isinstance(raw_eid, str):
+            entity_ids = [raw_eid]
+        elif isinstance(raw_eid, list):
+            entity_ids = [str(e) for e in raw_eid]
+        else:
+            entity_ids = [str(raw_eid)]
+
+        if self.entity_id not in entity_ids:
+            return
+
+        if self._sensor_target is None:
+            return
+
+        try:
+            if domain == 'xiaomi_miot' and service == 'call_action':
+                # aiid may arrive as int or string
+                aiid = service_data.get('aiid')
+                try:
+                    aiid = int(aiid)
+                except (TypeError, ValueError):
+                    aiid = None
+                params = service_data.get('params', [])
+
+                if aiid == 8:
+                    # Zone clean: params = ["x_min,y_min,x_min,y_max,x_max,y_max,x_max,y_min"]
+                    # Guard: params may be empty if the start (aiid=3) call fires before the zone call
+                    raw = params[0] if params else ''
+                    if not raw:
+                        return  # empty params — this is the start call, not the zone definition
+                    parts = [float(v) for v in str(raw).split(',') if v.strip()]
+                    if len(parts) >= 8:
+                        import json as _json
+                        target = _json.dumps({
+                            'type': 'zone',
+                            'x_min': min(parts[0], parts[4]),
+                            'y_min': min(parts[1], parts[5]),
+                            'x_max': max(parts[0], parts[4]),
+                            'y_max': max(parts[1], parts[5]),
+                        })
+                        self._sensor_target.set_target(target)
+                    else:
+                        _LOGGER.warning('%s: aiid=8 but could not parse zone from parts=%s', self.name_model, parts)
+
+                elif aiid == 9:
+                    # Goto target: params = ["x,y"]
+                    raw = params[0] if params else ''
+                    if not raw:
+                        return
+                    parts = [float(v) for v in str(raw).split(',') if v.strip()]
+                    if len(parts) >= 2:
+                        import json as _json
+                        target = _json.dumps({'type': 'point', 'x': parts[0], 'y': parts[1]})
+                        self._sensor_target.set_target(target)
+                    else:
+                        _LOGGER.warning('%s: aiid=9 but could not parse point from parts=%s', self.name_model, parts)
+
+            elif domain == 'vacuum' and service == 'send_command':
+                command = service_data.get('command', '')
+                params = service_data.get('params', [])
+
+                if command == 'app_zoned_clean':
+                    # params: [[x_min, y_min, x_max, y_max, repeats]]
+                    zone = params[0] if params else []
+                    if len(zone) >= 4:
+                        import json as _json
+                        target = _json.dumps({
+                            'type': 'zone',
+                            'x_min': float(zone[0]),
+                            'y_min': float(zone[1]),
+                            'x_max': float(zone[2]),
+                            'y_max': float(zone[3]),
+                        })
+                        self._sensor_target.set_target(target)
+
+                elif command == 'app_goto_target':
+                    if len(params) >= 2:
+                        import json as _json
+                        target = _json.dumps({'type': 'point', 'x': float(params[0]), 'y': float(params[1])})
+                        self._sensor_target.set_target(target)
+
+        except (ValueError, IndexError, TypeError) as exc:
+            _LOGGER.debug('%s: Could not parse service call for target sensor: %s', self.name_model, exc)
+
+    def _update_target_from_command(self, command, params=None):
+        """Called directly from async_send_command as a reliable fallback.
+        Covers the vacuum.send_command path regardless of event bus timing.
+        """
+        if self._sensor_target is None or not params:
+            return
+        import json as _json
+        try:
+            if command == 'app_zoned_clean':
+                zone = params[0] if params else []
+                if len(zone) >= 4:
+                    target = _json.dumps({
+                        'type': 'zone',
+                        'x_min': float(zone[0]),
+                        'y_min': float(zone[1]),
+                        'x_max': float(zone[2]),
+                        'y_max': float(zone[3]),
+                    })
+                    self._sensor_target.set_target(target)
+            elif command == 'app_goto_target':
+                if len(params) >= 2:
+                    target = _json.dumps({'type': 'point', 'x': float(params[0]), 'y': float(params[1])})
+                    self._sensor_target.set_target(target)
+        except (ValueError, IndexError, TypeError) as exc:
+            _LOGGER.debug('%s: Could not update target from command: %s', self.name_model, exc)
+
+
 
     def _on_device_status_update(self, data: dict, only_info=False):
         """Called by the device whenever new data is dispatched.
@@ -370,6 +588,9 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
     async def async_will_remove_from_hass(self):
         self.device.remove_listener(self._on_device_status_update)
         self._stop_path_polling()
+        if self._call_service_unsub is not None:
+            self._call_service_unsub()
+            self._call_service_unsub = None
 
     async def async_update(self):
         await super().async_update()
@@ -412,7 +633,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
             VacuumActivity.IDLE,
         ):
             self._stop_path_polling()
-            self._reset_coordinate_sensors()
+            self._reset_coordinate_sensors()  # also clears target sensor
 
     async def async_turn_on(self, **kwargs):
         if self._prop_power:
@@ -447,6 +668,53 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
             return await self.async_call_action(self._act_locate)
         return False
 
+    async def async_call_action(self, action=None, **kwargs):
+        # Called two ways:
+        #   Internal:  async_call_action(action_obj)          — e.g. return_to_base, start, pause
+        #   Service:   async_call_action(**{'siid':9,'aiid':8,'params':[...]})  — from __init__.py
+        # IMPORTANT: do NOT name any parameter 'params' — that key comes through **kwargs from
+        # the service path and must not be consumed before reaching super().
+        try:
+            if action is None:
+                # Service path — siid/aiid/params all live in kwargs
+                siid = kwargs.get('siid')
+                aiid = kwargs.get('aiid')
+                svc_params = kwargs.get('params', [])
+            else:
+                # Internal path — action is a MiotAction object
+                siid = getattr(action, 'siid', None)
+                aiid = getattr(action, 'aiid', None)
+                svc_params = []
+
+            if siid == 9 and self._sensor_target is not None:
+                import json as _json
+                if aiid == 8 and svc_params:
+                    raw = svc_params[0] if isinstance(svc_params, list) else svc_params
+                    parts = [float(v) for v in str(raw).split(',') if v.strip()]
+                    if len(parts) >= 8:
+                        target = _json.dumps({
+                            'type': 'zone',
+                            'x_min': min(parts[0], parts[4]),
+                            'y_min': min(parts[1], parts[5]),
+                            'x_max': max(parts[0], parts[4]),
+                            'y_max': max(parts[1], parts[5]),
+                        })
+                        self._sensor_target.set_target(target)
+                elif aiid == 9 and svc_params:
+                    raw = svc_params[0] if isinstance(svc_params, list) else svc_params
+                    parts = [float(v) for v in str(raw).split(',') if v.strip()]
+                    if len(parts) >= 2:
+                        target = _json.dumps({'type': 'point', 'x': parts[0], 'y': parts[1]})
+                        self._sensor_target.set_target(target)
+        except Exception as exc:
+            _LOGGER.debug('%s: async_call_action target capture failed: %s', self.name_model, exc)
+
+        if action is None:
+            # Service path: forward all kwargs intact (including 'params')
+            return await super().async_call_action(**kwargs)
+        # Internal path: forward only the action object, no extra args
+        return await super().async_call_action(action, **kwargs)
+
     def clean_spot(self, **kwargs):
         raise NotImplementedError()
 
@@ -478,6 +746,8 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         """Send a command to a vacuum cleaner.
         This method must be run in the event loop.
         """
+        # Capture target before forwarding the command
+        self._update_target_from_command(command, params)
         return await self.async_miio_command(command, params)
 
 
@@ -582,6 +852,7 @@ class MiotRoborockVacuumEntity(MiotVacuumEntity):
         dvc = self.miot_device
         if not dvc:
             raise NotImplementedError()
+        self._update_target_from_command(command, params)
         return await self.async_miio_command(command, params)
 
     async def async_start_clean_segment(self, segment, repeat=1, **kwargs):
@@ -642,6 +913,7 @@ class MiotViomiVacuumEntity(MiotVacuumEntity):
         if not dvc:
             raise NotImplementedError()
         _LOGGER.debug('%s: Send command: %s %s', self.name_model, command, params)
+        self._update_target_from_command(command, params)
         if command == 'app_zoned_clean':
             # params: [[x1, y2, x2, y1, repeats]]
             rpt = 1
