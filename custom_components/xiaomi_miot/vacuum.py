@@ -37,8 +37,8 @@ CLEANING_PATH_MAPPING = {
         'piid': 5,
     }
 }
-# Poll interval in seconds when vacuum is cleaning
-CLEANING_PATH_POLL_INTERVAL = 2
+# Poll interval in seconds when vacuum is cleaning (Reduced to 1s for instant map updates)
+CLEANING_PATH_POLL_INTERVAL = 1
 
 _LOGGER = logging.getLogger(__name__)
 DATA_KEY = f'{ENTITY_DOMAIN}.{DOMAIN}'
@@ -51,8 +51,7 @@ def _parse_cleaning_path(raw_data):
     """
     Parse the cleaning path data string returned by siid=10, piid=5.
 
-    The data looks like:
-      [2611,-3.9,-0.9,1.9,1,-3.9,-0.8,1.6,1,...,timestamp]
+    The data looks like:[2611,-3.9,-0.9,1.9,1,-3.9,-0.8,1.6,1,...,timestamp]
 
     Each position record is 4 values: x, y, angle, flag.
     The last value in the list is a timestamp integer.
@@ -63,9 +62,9 @@ def _parse_cleaning_path(raw_data):
     try:
         if isinstance(raw_data, str):
             clean = raw_data.strip().replace('[', '').replace(']', '')
-            parts = [p.strip() for p in clean.split(',') if p.strip()]
+            parts =[p.strip() for p in clean.split(',') if p.strip()]
         elif isinstance(raw_data, (list, tuple)):
-            parts = [str(p) for p in raw_data]
+            parts =[str(p) for p in raw_data]
         else:
             return 0.0, 0.0, 0.0
 
@@ -73,7 +72,7 @@ def _parse_cleaning_path(raw_data):
             return 0.0, 0.0, 0.0
 
         # The last element is a large integer timestamp; before it are records of 4 values each.
-        # Most recent point: index [-5] = x, [-4] = y, [-3] = rotation, [-2] = flag, [-1] = timestamp
+        # Most recent point: index [-5] = x,[-4] = y, [-3] = rotation, [-2] = flag, [-1] = timestamp
         x = float(parts[-5])
         y = float(parts[-4])
         rotation = float(parts[-3])
@@ -128,7 +127,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     config['hass'] = hass
     model = str(config.get(CONF_MODEL) or '')
     spec = hass.data[DOMAIN]['miot_specs'].get(model)
-    entities = []
+    entities =[]
     if isinstance(spec, MiotSpec):
         for srv in spec.get_services(ENTITY_DOMAIN, 'mopping_machine'):
             if not srv.get_property('status'):
@@ -161,7 +160,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         self._act_locate = miot_service.get_action('find_device', 'position')
         self._prop_mode = miot_service.get_property('mode', 'clean_mode')
         self._prop_fan = self._prop_mode
-        for srv in [*miot_service.spec.get_services('sweep', 'clean'), miot_service]:
+        for srv in[*miot_service.spec.get_services('sweep', 'clean'), miot_service]:
             if prop := srv.get_property('fan_level', 'speed_level', 'suction_state', 'fan_mode', 'mode'):
                 self._prop_fan = prop
                 break
@@ -173,7 +172,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         if self._srv_audio and not self._act_locate:
             self._act_locate = self._srv_audio.get_action('find_device', 'position')
         self._act_charge = None
-        for srv in [*miot_service.spec.get_services('battery', 'go_charging'), miot_service]:
+        for srv in[*miot_service.spec.get_services('battery', 'go_charging'), miot_service]:
             act = srv.get_action('start_charge', 'start_charging')
             if act:
                 self._act_charge = act
@@ -267,7 +266,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         _LOGGER.info('%s: Registered vacuum coordinate sensors', self.name_model)
 
     async def _async_poll_cleaning_path(self):
-        """Background task: poll siid=10 piid=5 every 2 seconds while cleaning."""
+        """Background task: poll siid=10 piid=5 every 1 second while cleaning."""
         _LOGGER.debug('%s: Starting cleaning path polling', self.name_model)
         while self._path_polling_active:
             try:
@@ -275,15 +274,11 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
                     CLEANING_PATH_MAPPING,
                     update_entity=False,
                 )
-                # Log the full raw result at warning level temporarily so it
-                # shows up easily in HA logs without needing debug mode enabled
-                _LOGGER.warning('%s: Cleaning path raw result: %s', self.name_model, result)
-
+                
                 raw = None
                 if isinstance(result, dict):
                     # Try 'data' key first (matches our mapping key), then fall back
-                    # to any non-None value (key is typically the full miot property
-                    # name like 'robot_cleaner.cur_cleaning_path' etc.)
+                    # to any non-None value
                     raw = result.get('data')
                     if raw is None:
                         for v in result.values():
@@ -299,15 +294,8 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
                         self._sensor_y.set_value(y)
                     if self._sensor_rotation is not None:
                         self._sensor_rotation.set_value(rotation)
-                    _LOGGER.debug(
-                        '%s: Cleaning path update - x=%.4f y=%.4f rot=%.4f',
-                        self.name_model, x, y, rotation,
-                    )
                 else:
-                    _LOGGER.warning(
-                        '%s: Cleaning path result had no usable value: %s',
-                        self.name_model, result,
-                    )
+                    _LOGGER.debug('%s: Cleaning path result had no usable value: %s', self.name_model, result)
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001
@@ -348,15 +336,19 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         """
         if only_info:
             return
-        # The status property key varies by device spec; check both full and short names
-        status_keys = {'vacuum.status', 'status'}
-        if not status_keys & data.keys():
-            return
         if not self._prop_status:
             return
+            
+        # The device pushes data with various keys (e.g. 'robot_cleaner.status', 'status').
+        # Catch ANY key that represents the status property to guarantee instant map triggers.
+        match_keys = {'vacuum.status', 'status', self._prop_status.full_name, self._prop_status.name}
+        if not any(k in match_keys or k.endswith('.status') for k in data.keys()):
+            return
+
         val = self._prop_status.from_device(self.device)
         if val is None:
             return
+            
         cleaning_vals = self._prop_status.list_search(
             'Cleaning', 'Sweeping', 'Small Sweeping', 'Mopping', 'Sweeping And Mopping',
             'Washing', 'Go Washing', 'Part Sweeping', 'Zone Sweeping', 'Select Sweeping',
@@ -368,6 +360,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
         docked_vals = self._prop_status.list_search(
             'Idle', 'Sleep', 'Charging', 'Charging Completed', 'Fullcharge', 'Charge Done', 'Drying',
         )
+        
         if val in cleaning_vals:
             self._start_path_polling()
         elif val in docked_vals:
@@ -406,8 +399,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
             else:
                 self._attr_activity = VacuumActivity.IDLE
 
-        # Poll while the vacuum is anywhere on the map (cleaning, returning, paused, error)
-        # Stop and reset to 0 when docked or idle (no meaningful position)
+        # Failsafe: Ensure polling starts if we somehow missed the push event
         if self._attr_activity in (
             VacuumActivity.CLEANING,
             VacuumActivity.RETURNING,
@@ -473,7 +465,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
     @property
     def fan_speed_list(self):
         if self._prop_fan:
-            return self._prop_fan.list_description(None) or []
+            return self._prop_fan.list_description(None) or[]
         return None
 
     async def async_set_fan_speed(self, fan_speed, **kwargs):
@@ -498,7 +490,7 @@ class MiotRoborockVacuumEntity(MiotVacuumEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
-        rooms = await self.get_room_mapping() or []
+        rooms = await self.get_room_mapping() or[]
 
         if add_buttons := self.device.entry.adders.get('button'):
             from .button import ButtonSubEntity
@@ -514,7 +506,7 @@ class MiotRoborockVacuumEntity(MiotVacuumEntity):
                     'state_attrs': {'room_id': r[1]},
                 })
                 add_buttons([self._subs[sub]], update_before_add=False)
-        self.logger.info('Room buttons: %s', [rooms, add_buttons])
+        self.logger.info('Room buttons: %s',[rooms, add_buttons])
 
     async def async_update(self):
         await super().async_update()
@@ -538,7 +530,7 @@ class MiotRoborockVacuumEntity(MiotVacuumEntity):
         try:
             rooms = await self.miot_device.async_send('get_room_mapping')
             if rooms and rooms != 'unknown_method':
-                homes = await self.xiaomi_cloud.async_get_homerooms() if self.xiaomi_cloud else []
+                homes = await self.xiaomi_cloud.async_get_homerooms() if self.xiaomi_cloud else[]
                 cloud_rooms = {}
                 for home in homes:
                     for room in home.get('roomlist', []):
@@ -569,7 +561,7 @@ class MiotRoborockVacuumEntity(MiotVacuumEntity):
         return await super().async_pause()
 
     async def async_return_to_base(self, **kwargs):
-        if self.model in ['rockrobo.vacuum.v1']:
+        if self.model in['rockrobo.vacuum.v1']:
             await self.async_stop()
         return await super().async_return_to_base()
 
@@ -593,7 +585,7 @@ class MiotRoborockVacuumEntity(MiotVacuumEntity):
         return await self.async_miio_command(command, params)
 
     async def async_start_clean_segment(self, segment, repeat=1, **kwargs):
-        segments = []
+        segments =[]
         for r in self._state_attrs.get('room_mapping', []):
             if segment in r:
                 segments.append(r[0])
@@ -604,9 +596,9 @@ class MiotRoborockVacuumEntity(MiotVacuumEntity):
         if self.state == VacuumActivity.CLEANING:
             await self.async_pause()
             await asyncio.sleep(1)
-        if self.model in ['roborock.vacuum.m1s']:
+        if self.model in['roborock.vacuum.m1s']:
             return await self.async_miio_command('app_segment_clean', segments)
-        return await self.async_miio_command('app_segment_clean', [{'segments': segments, 'repeat': repeat}])
+        return await self.async_miio_command('app_segment_clean',[{'segments': segments, 'repeat': repeat}])
 
 
 class MiotViomiVacuumEntity(MiotVacuumEntity):
@@ -614,7 +606,7 @@ class MiotViomiVacuumEntity(MiotVacuumEntity):
         super().__init__(config, miot_service)
         self._supported_features |= VacuumEntityFeature.LOCATE
         self._supported_features |= VacuumEntityFeature.SEND_COMMAND
-        self._miio_props = [
+        self._miio_props =[
             'run_state', 'mode', 'err_state', 'battary_life', 'box_type', 'mop_type', 's_time', 's_area',
             'suction_grade', 'water_grade', 'remember_map', 'has_map', 'is_mop', 'has_newmap',
         ]
@@ -654,7 +646,7 @@ class MiotViomiVacuumEntity(MiotVacuumEntity):
             # params: [[x1, y2, x2, y1, repeats]]
             rpt = 1
             lst = []
-            for z in params or []:
+            for z in params or[]:
                 rpt = z.pop(-1)
                 lst.append(z)
             return await self.async_clean_zones(lst, rpt)
@@ -663,18 +655,18 @@ class MiotViomiVacuumEntity(MiotVacuumEntity):
         return await self.async_miio_command(command, params)
 
     async def async_clean_zones(self, zones, repeats=1):
-        result = []
+        result =[]
         i = 0
         for z in zones:
             x1, y2, x2, y1 = z
-            res = '_'.join(str(x) for x in [i, 0, x1, y1, x1, y2, x2, y2, x2, y1])
+            res = '_'.join(str(x) for x in[i, 0, x1, y1, x1, y2, x2, y2, x2, y1])
             for _ in range(repeats):
                 result.append(res)
                 i += 1
         result = [i, *result]
         await self.async_miio_command('set_uploadmap', [1])
         await self.async_miio_command('set_zone', result)
-        return await self.async_miio_command('set_mode', [3, 1])
+        return await self.async_miio_command('set_mode',[3, 1])
 
     async def async_clean_point(self, point):
         await self.async_miio_command('set_uploadmap', [0])

@@ -29,6 +29,7 @@ class XiaomiStaticMapCardEditor extends LitElement {
         <ha-textfield label="Card name (optional)" .value="${name || ''}" .configValue="${"name"}" @input="${this._val}"></ha-textfield>
         <ha-textfield label="Image URL" .value="${image || ''}" .configValue="${"image"}" @input="${this._val}"></ha-textfield>
         <ha-selector label="Vacuum" .hass="${this.hass}" .selector="${{entity:{domain:"vacuum"}}}" .value="${this.config.vacuum_entity}" .configValue="${"vacuum_entity"}" @value-changed="${this._val}"></ha-selector>
+        <ha-selector label="Status sensor (optional, instant updates)" .hass="${this.hass}" .selector="${{entity:{domain:"sensor"}}}" .value="${this.config.status_sensor||''}" .configValue="${"status_sensor"}" @value-changed="${this._val}"></ha-selector>
         <div class="sec" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
           <span style="font-size:.9rem;">Show fan speed &amp; mode on card</span>
           <ha-switch .checked="${this.config.show_extra_info||false}" @change="${(e)=>this._save({show_extra_info:e.target.checked})}"></ha-switch>
@@ -215,7 +216,7 @@ class XiaomiStaticMapCard extends LitElement {
   static getStubConfig() {
     return {
       image: "/local/floorplan.png",
-      vacuum_entity: "", x_sensor: "", y_sensor: "", rotation_sensor: "",
+      vacuum_entity: "", status_sensor: "", x_sensor: "", y_sensor: "", rotation_sensor: "",
       show_extra_info: false, fan_speed_entity: "", mode_entity: "",
       scale_width_percent_per_meter: 0, aspect_ratio: 1,
       dock: { x: 50, y: 50 }, ref_vector: { x: 0, y: 0 },
@@ -444,6 +445,7 @@ class XiaomiStaticMapCard extends LitElement {
     const xState = this.hass.states[x_sensor];
     const yState = this.hass.states[y_sensor];
     const vacState = this.hass.states[vacuum_entity];
+    const statusSensorState = this.config.status_sensor ? this.hass.states[this.config.status_sensor] : null;
 
     let rawX = xState ? parseFloat(xState.state)||0 : 0;
     let rawY = yState ? parseFloat(yState.state)||0 : 0;
@@ -451,12 +453,24 @@ class XiaomiStaticMapCard extends LitElement {
     let statusText = "Unknown", batteryLevel = 0, isOnline = false;
     let batteryIcon = "mdi:battery-unknown", isCleaning = false;
 
+    // Use fast status sensor for state display if configured, fall back to vacuum entity
+    const stateStr = statusSensorState?.state ?? vacState?.state;
+    if (stateStr) {
+      const STATUS_LABELS = {
+        sweeping: 'Sweeping', goto_target: 'Going to point', zone_cleaning: 'Zone cleaning',
+        returning_home: 'Returning', charging: 'Charging', standby: 'Standby',
+        paused: 'Paused', idle: 'Idle', docked: 'Docked', error: 'Error',
+        cleaning: 'Cleaning', returning: 'Returning',
+      };
+      statusText = STATUS_LABELS[stateStr]
+        ?? stateStr.charAt(0).toUpperCase() + stateStr.slice(1).replace(/_/g, ' ');
+      isOnline = !['unavailable', 'unknown'].includes(stateStr);
+      isCleaning = ['cleaning','returning','sweeping','goto_target','zone_cleaning','returning_home','paused'].includes(stateStr);
+    }
+    // Battery always comes from vacuum entity attributes
     if (vacState) {
-      statusText = vacState.state.charAt(0).toUpperCase() + vacState.state.slice(1);
-      isOnline = !['unavailable','unknown'].includes(vacState.state);
       batteryLevel = vacState.attributes.battery_level || 0;
       batteryIcon = this.getBatteryIcon(batteryLevel, vacState.state);
-      isCleaning = ['cleaning','returning'].includes(vacState.state);
     }
 
     const showExtra = this.config.show_extra_info || false;

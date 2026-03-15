@@ -96,8 +96,11 @@ class XiaomiVacuumShortcutCard extends HTMLElement {
   get _vac() { return this._hass?.states[this._config.vacuum_entity]; }
 
   _isBusy() {
-    const s = this._vac?.state;
-    return s && !['idle','docked','error','returning','paused'].includes(s);
+    const ss = this._config.status_sensor;
+    const s = (ss && this._hass?.states[ss])
+      ? this._hass.states[ss].state
+      : this._vac?.state;
+    return s && !['idle','docked','error','returning','paused','charging','standby','unknown',''].includes(s);
   }
 
   // ── Commands ─────────────────────────────────────────────────────────────────
@@ -493,6 +496,12 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
           </select>
         </div>
 
+        <!-- Status sensor -->
+        <div class="field">
+          <label>Status sensor <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — for instant updates)</span></label>
+          <input type="text" name="status_sensor" value="${c.status_sensor || ''}" placeholder="e.g. sensor.ijai_v3_542b_status">
+        </div>
+
         <!-- Name & Icon -->
         <div class="row">
           <div class="field">
@@ -572,6 +581,10 @@ class XiaomiVacuumCustomCardEditor extends HTMLElement {
     // Entity select
     root.querySelector('select[name="vacuum_entity"]')
       ?.addEventListener('change', e => this._fire({ vacuum_entity: e.target.value }));
+
+    // Status sensor
+    root.querySelector('input[name="status_sensor"]')
+      ?.addEventListener('input', e => this._fire({ status_sensor: e.target.value }));
 
     // Text inputs
     root.querySelector('input[name="name"]')
@@ -786,10 +799,15 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
 
   get _vac() { return this._hass?.states[this._config.vacuum_entity]; }
 
-  _vacState() { return this._vac?.state ?? 'unknown'; }
+  _vacState() {
+    const ss = this._config.status_sensor;
+    if (ss && this._hass?.states[ss]) return this._hass.states[ss].state;
+    return this._vac?.state ?? 'unknown';
+  }
 
   _isBusy() {
-    return !['idle', 'docked', 'error', 'returning', 'paused', 'unknown'].includes(this._vacState());
+    const s = this._vacState();
+    return !['idle','docked','error','returning','paused','charging','standby','unknown',''].includes(s);
   }
 
   _statusLabel() {
@@ -797,8 +815,11 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
     const map = {
       cleaning: 'Cleaning…', returning: 'Returning…', paused: 'Paused',
       idle: 'Idle', docked: 'Docked', error: 'Error',
+      sweeping: 'Sweeping…', goto_target: 'Going to point…',
+      zone_cleaning: 'Zone cleaning…', returning_home: 'Returning…',
+      charging: 'Charging', standby: 'Standby',
     };
-    return map[s] ?? s.charAt(0).toUpperCase() + s.slice(1);
+    return map[s] ?? (s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ') : 'Unknown');
   }
 
   // ── Commands ─────────────────────────────────────────────────────────────────
@@ -1192,6 +1213,12 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
           </select>
         </div>
 
+        <!-- Status sensor -->
+        <div class="field">
+          <label>Status sensor <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional — for instant updates)</span></label>
+          <input type="text" name="status_sensor" value="${c.status_sensor || ''}" placeholder="e.g. sensor.ijai_v3_542b_status">
+        </div>
+
         <!-- Card name + command style -->
         <div class="row2">
           <div class="field">
@@ -1316,6 +1343,9 @@ class XiaomiVacuumZoneListCardEditor extends HTMLElement {
 
     root.querySelector('select[name="vacuum_entity"]')
       ?.addEventListener('change', e => this._fire({ vacuum_entity: e.target.value }));
+
+    root.querySelector('input[name="status_sensor"]')
+      ?.addEventListener('input', e => this._fire({ status_sensor: e.target.value }));
 
     root.querySelector('input[name="name"]')
       ?.addEventListener('input', e => this._fire({ name: e.target.value }));
