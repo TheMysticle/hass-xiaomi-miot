@@ -29,6 +29,64 @@ class XiaomiStaticMapCardEditor extends LitElement {
         <ha-textfield label="Card name (optional)" .value="${name || ''}" .configValue="${"name"}" @input="${this._val}"></ha-textfield>
         <ha-textfield label="Image URL" .value="${image || ''}" .configValue="${"image"}" @input="${this._val}"></ha-textfield>
         <ha-selector label="Vacuum" .hass="${this.hass}" .selector="${{entity:{domain:"vacuum"}}}" .value="${this.config.vacuum_entity}" .configValue="${"vacuum_entity"}" @value-changed="${this._val}"></ha-selector>
+        <div class="sec" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <span style="font-size:.9rem;">Show fan speed &amp; mode on card</span>
+          <ha-switch .checked="${this.config.show_extra_info||false}" @change="${(e)=>this._save({show_extra_info:e.target.checked})}"></ha-switch>
+        </div>
+        ${this.config.show_extra_info ? html`
+          <ha-selector label="Fan speed entity (select)" .hass="${this.hass}" .selector="${{entity:{domain:'select'}}}" .value="${this.config.fan_speed_entity||''}" .configValue="${'fan_speed_entity'}" @value-changed="${this._val}"></ha-selector>
+          ${(() => {
+            const fsEntity = this.config.fan_speed_entity;
+            const fsState = fsEntity ? this.hass?.states[fsEntity] : null;
+            const fsOptions = fsState?.attributes?.options || [];
+            const fsLabels = this.config.fan_speed_labels || [];
+            if (!fsOptions.length) return html``;
+            return html`
+              <div class="sec">
+                <b style="font-size:.85rem;">Fan speed labels</b>
+                <div style="font-size:.75rem;color:var(--secondary-text-color);margin-bottom:6px;">Replace Chinese/raw values with friendly names (top = lowest, bottom = highest)</div>
+                ${fsOptions.map((opt, i) => html`
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                    <span style="font-size:.78rem;color:var(--secondary-text-color);flex:0 0 40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${opt}">${opt}</span>
+                    <ha-textfield style="flex:1;" label="Label" .value="${fsLabels[i]||''}"
+                      @input="${(e) => {
+                        const arr = [...(this.config.fan_speed_labels || fsOptions.map(() => ''))];
+                        arr[i] = e.target.value;
+                        this._save({fan_speed_labels: arr});
+                      }}">
+                    </ha-textfield>
+                  </div>
+                `)}
+              </div>
+            `;
+          })()}
+          <ha-selector label="Mode entity (select, optional)" .hass="${this.hass}" .selector="${{entity:{domain:'select'}}}" .value="${this.config.mode_entity||''}" .configValue="${'mode_entity'}" @value-changed="${this._val}"></ha-selector>
+          ${(() => {
+            const mEntity = this.config.mode_entity;
+            const mState = mEntity ? this.hass?.states[mEntity] : null;
+            const mOptions = mState?.attributes?.options || [];
+            const mLabels = this.config.mode_labels || [];
+            if (!mOptions.length) return html``;
+            return html`
+              <div class="sec">
+                <b style="font-size:.85rem;">Mode labels</b>
+                <div style="font-size:.75rem;color:var(--secondary-text-color);margin-bottom:6px;">Replace Chinese/raw values with friendly names</div>
+                ${mOptions.map((opt, i) => html`
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                    <span style="font-size:.78rem;color:var(--secondary-text-color);flex:0 0 40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${opt}">${opt}</span>
+                    <ha-textfield style="flex:1;" label="Label" .value="${mLabels[i]||''}"
+                      @input="${(e) => {
+                        const arr = [...(this.config.mode_labels || mOptions.map(() => ''))];
+                        arr[i] = e.target.value;
+                        this._save({mode_labels: arr});
+                      }}">
+                    </ha-textfield>
+                  </div>
+                `)}
+              </div>
+            `;
+          })()}
+        ` : ''}
         <div class="row">
           <ha-selector label="X" .hass="${this.hass}" .selector="${{entity:{domain:["sensor","input_number"]}}}" .value="${x_sensor}" .configValue="${"x_sensor"}" @value-changed="${this._val}"></ha-selector>
           <ha-selector label="Y" .hass="${this.hass}" .selector="${{entity:{domain:["sensor","input_number"]}}}" .value="${y_sensor}" .configValue="${"y_sensor"}" @value-changed="${this._val}"></ha-selector>
@@ -120,7 +178,6 @@ class XiaomiStaticMapCardEditor extends LitElement {
 class XiaomiStaticMapCard extends LitElement {
   static get properties() {
     return {
-      hass: {},
       config: {},
       _mode:          { state: true },
       _click1:        { state: true },
@@ -130,6 +187,16 @@ class XiaomiStaticMapCard extends LitElement {
       _inspectResult: { state: true },
     };
   }
+
+  // Custom hass setter — HA passes the same mutated object every tick,
+  // so Lit's default shallow-equality check never sees a change.
+  // We store it manually and call requestUpdate() to force a re-render
+  // every time hass is set, giving instant state updates.
+  set hass(hass) {
+    this._hass = hass;
+    this.requestUpdate();
+  }
+  get hass() { return this._hass; }
 
   constructor() {
     super();
@@ -149,6 +216,7 @@ class XiaomiStaticMapCard extends LitElement {
     return {
       image: "/local/floorplan.png",
       vacuum_entity: "", x_sensor: "", y_sensor: "", rotation_sensor: "",
+      show_extra_info: false, fan_speed_entity: "", mode_entity: "",
       scale_width_percent_per_meter: 0, aspect_ratio: 1,
       dock: { x: 50, y: 50 }, ref_vector: { x: 0, y: 0 },
       map_exit_angle: 90, enable_mirror: false,
@@ -164,7 +232,14 @@ class XiaomiStaticMapCard extends LitElement {
     this.config = config;
   }
 
-  getCardSize() { return 1; }
+  getCardSize() { return this.config?.show_extra_info ? 2 : 1; }
+
+  getLayoutOptions() {
+    if (this.config?.show_extra_info) {
+      return { grid_rows: 2, grid_min_rows: 2, grid_columns: 4 };
+    }
+    return { grid_rows: 1, grid_min_rows: 1, grid_columns: 4 };
+  }
 
   // ── Math helpers ─────────────────────────────────────────────────────────────
 
@@ -220,6 +295,7 @@ class XiaomiStaticMapCard extends LitElement {
   // Uses a 10px movement threshold to distinguish scroll from tap/hold.
 
   _onPointerDown(e) {
+    if (e.target.tagName === 'SELECT') return;
     const t = e.touches?.[0] ?? e;
     this._startX = t.clientX;
     this._startY = t.clientY;
@@ -245,6 +321,7 @@ class XiaomiStaticMapCard extends LitElement {
   }
 
   _onPointerUp(e) {
+    if (e.target.tagName === 'SELECT') return;
     clearTimeout(this._holdTimer);
     if (!this._holdTriggered && !this._scrollCancelled) {
       // Short tap = start / stop toggle
@@ -382,6 +459,14 @@ class XiaomiStaticMapCard extends LitElement {
       isCleaning = ['cleaning','returning'].includes(vacState.state);
     }
 
+    const showExtra = this.config.show_extra_info || false;
+    const fanSpeedState = showExtra && this.config.fan_speed_entity ? this.hass?.states[this.config.fan_speed_entity] : null;
+    const modeState     = showExtra && this.config.mode_entity      ? this.hass?.states[this.config.mode_entity]      : null;
+    const fanSpeed   = fanSpeedState?.state ?? null;
+    const fanOptions = fanSpeedState?.attributes?.options || [];
+    const vacMode    = modeState?.state ?? null;
+    const modeOptions = modeState?.attributes?.options || [];
+
     const cardName = this.config.name || (vacState?.attributes.friendly_name) || "Vacuum";
     const dotColor = isOnline ? '#4CAF50' : '#F44336';
     const robotPos = this.calculateRobotPosition(rawX, rawY);
@@ -412,7 +497,7 @@ class XiaomiStaticMapCard extends LitElement {
 
     return html`
       <!-- ── Mushroom-style compact chip ── -->
-      <ha-card id="main-card"
+      <ha-card id="main-card" class="${showExtra ? 'expanded' : ''}"
         @mousedown="${this._onPointerDown}"
         @touchstart="${this._onPointerDown}"
         @mousemove="${this._onPointerMove}"
@@ -422,17 +507,62 @@ class XiaomiStaticMapCard extends LitElement {
         @mouseleave="${this._onPointerCancel}"
         @touchcancel="${this._onPointerCancel}"
       >
-        <div class="mush-icon ${isOnline ? 'on' : 'off'} ${isCleaning ? 'cleaning' : ''}">
-          <ha-icon icon="mdi:robot-vacuum"></ha-icon>
-        </div>
-        <div class="mush-info">
-          <div class="mush-name">${cardName}</div>
-          <div class="mush-badge">
-            <span class="status-dot" style="background:${dotColor};"></span>
-            ${statusText} · ${batteryLevel}%
+        <!-- Top row: icon + info + hold hint -->
+        <div class="mush-chip-row">
+          <div class="mush-icon ${isOnline ? 'on' : 'off'} ${isCleaning ? 'cleaning' : ''}">
+            <ha-icon icon="mdi:robot-vacuum"></ha-icon>
           </div>
+          <div class="mush-info">
+            <div class="mush-name">${cardName}</div>
+            <div class="mush-badge">
+              <span class="status-dot" style="background:${dotColor};"></span>
+              ${statusText} · ${batteryLevel}%
+            </div>
+          </div>
+          <div class="mush-hold-hint">Hold</div>
         </div>
-        <div class="mush-hold-hint">Hold</div>
+
+        <!-- Second row: fan speed + mode dropdowns -->
+        ${showExtra ? html`
+          <div class="mush-details-row">
+            ${this.config.fan_speed_entity ? html`
+              <div class="mush-detail-item">
+                <ha-icon icon="mdi:fan" class="detail-icon"></ha-icon>
+                <select class="detail-select"
+                  @change="${(e) => { e.stopPropagation(); this.hass.callService('select', 'select_option', { entity_id: this.config.fan_speed_entity, option: e.target.value }); }}"
+                  @mousedown="${(e) => e.stopPropagation()}"
+                  @touchstart="${(e) => e.stopPropagation()}"
+                  @mouseup="${(e) => e.stopPropagation()}"
+                  @touchend="${(e) => e.stopPropagation()}"
+                >
+                  ${fanOptions.map((s, i) => {
+                    const labels = this.config.fan_speed_labels || [];
+                    const label = labels[i] || s;
+                    return html`<option value="${s}" ?selected="${s === fanSpeed}">${label}</option>`;
+                  })}
+                </select>
+              </div>
+            ` : ''}
+            ${this.config.mode_entity ? html`
+              <div class="mush-detail-item">
+                <ha-icon icon="mdi:robot-vacuum-variant" class="detail-icon"></ha-icon>
+                <select class="detail-select"
+                  @change="${(e) => { e.stopPropagation(); this.hass.callService('select', 'select_option', { entity_id: this.config.mode_entity, option: e.target.value }); }}"
+                  @mousedown="${(e) => e.stopPropagation()}"
+                  @touchstart="${(e) => e.stopPropagation()}"
+                  @mouseup="${(e) => e.stopPropagation()}"
+                  @touchend="${(e) => e.stopPropagation()}"
+                >
+                  ${modeOptions.map((s, i) => {
+                    const labels = this.config.mode_labels || [];
+                    const label = labels[i] || s;
+                    return html`<option value="${s}" ?selected="${s === vacMode}">${label}</option>`;
+                  })}
+                </select>
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
       </ha-card>
 
       <!-- ── Popup overlay + bottom sheet ── -->
@@ -579,11 +709,15 @@ class XiaomiStaticMapCard extends LitElement {
 
       /* ── Compact chip ── */
       ha-card {
-        padding: 10px;
-        display: flex; align-items: center; gap: 10px;
+        padding: 0;
+        display: flex; flex-direction: column;
         cursor: pointer; user-select: none; -webkit-user-select: none;
-        height: 56px; overflow: hidden;
+        min-height: 56px; height: auto; overflow: hidden;
         transition: box-shadow .15s;
+      }
+      .mush-chip-row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px; min-height: 56px; width: 100%;
       }
 
       .mush-icon {
@@ -721,6 +855,36 @@ class XiaomiStaticMapCard extends LitElement {
       .ctrl-btn ha-icon { --mdc-icon-size: 22px; display: flex; line-height: 0; }
       .ctrl-btn:hover { background: var(--divider-color, rgba(0,0,0,.08)); }
       .ctrl-btn.active { color: #009688; background: rgba(0,150,136,.12); }
+
+      /* ── Details row (fan speed + mode) ── */
+      .mush-details-row {
+        display: flex; align-items: center; gap: 8px;
+        width: 100%; padding: 0 10px 10px;
+        min-height: 56px; box-sizing: border-box;
+      }
+      .mush-detail-item {
+        display: flex; align-items: center; gap: 5px;
+        flex: 1; min-width: 0;
+        background: var(--secondary-background-color);
+        border-radius: 8px; padding: 10px 10px;
+        min-height: 36px;
+      }
+      .detail-icon {
+        --mdc-icon-size: 15px; display: flex; line-height: 0;
+        color: #009688; flex-shrink: 0;
+      }
+      .detail-val {
+        font-size: .78rem; color: var(--secondary-text-color);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .detail-select {
+        font-size: .78rem; color: var(--primary-text-color);
+        background: transparent;
+        border: none; padding: 0;
+        cursor: pointer; flex: 1; min-width: 0;
+        font-family: inherit; appearance: none; -webkit-appearance: none;
+      }
+      .detail-select:focus { outline: none; }
       .sep { width: 1px; height: 20px; background: var(--divider-color, rgba(0,0,0,.15)); margin: 0 4px; flex-shrink: 0; }
 
       /* ── Inspector ── */

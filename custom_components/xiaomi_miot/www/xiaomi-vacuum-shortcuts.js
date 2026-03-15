@@ -623,14 +623,15 @@ window.customCards = window.customCards || [];
 
 const ZONE_LIST_STYLES = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :host { display: block; font-family: var(--primary-font-family, Roboto, sans-serif); }
+  :host { display: block; font-family: var(--primary-font-family, Roboto, sans-serif); height: 100%; }
 
   ha-card {
     padding: 10px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    justify-content: space-between;
     height: 100%;
+    box-sizing: border-box;
   }
 
   /* ── Header row ── */
@@ -638,6 +639,7 @@ const ZONE_LIST_STYLES = `
     display: flex;
     align-items: center;
     gap: 10px;
+    min-height: 36px;
   }
   .header-icon {
     width: 36px; height: 36px; min-width: 36px;
@@ -665,7 +667,7 @@ const ZONE_LIST_STYLES = `
   /* ── Zone dropdown ── */
   .zone-select {
     width: 100%;
-    padding: 10px 36px 10px 12px;
+    padding: 13px 36px 13px 12px;
     border: 1px solid var(--divider-color, #e0e0e0);
     border-radius: 10px;
     background: var(--secondary-background-color, #f5f5f5)
@@ -691,7 +693,7 @@ const ZONE_LIST_STYLES = `
   }
   .btn {
     display: flex; align-items: center; justify-content: center; gap: 7px;
-    padding: 11px 8px;
+    padding: 14px 8px;
     border: none; border-radius: 10px;
     font-size: .88rem; font-weight: 500; font-family: inherit;
     cursor: pointer;
@@ -759,7 +761,11 @@ class XiaomiVacuumZoneListCard extends HTMLElement {
     return document.createElement('xiaomi-vacuum-zone-list-card-editor');
   }
 
-  getCardSize() { return 2; }
+  getCardSize() { return 3; }
+
+  getLayoutOptions() {
+    return { grid_rows: 3, grid_min_rows: 3, grid_columns: 4 };
+  }
 
   setConfig(config) {
     this._config = config;
