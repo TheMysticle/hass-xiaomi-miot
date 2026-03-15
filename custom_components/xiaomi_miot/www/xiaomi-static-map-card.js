@@ -534,8 +534,8 @@ class XiaomiStaticMapCard extends LitElement {
             activeTargetOverlay = html`<div class="active-target-zone" style="left:${zLeft}%;top:${zTop}%;width:${zWidth}%;height:${zHeight}%;"></div>`;
           } else if (activeTarget.type === 'point') {
             // Standard 1.5 m square centred on goto point
-            const pTL = this.calculateRobotPosition(activeTarget.x - 0.75, activeTarget.y - 0.75);
-            const pBR = this.calculateRobotPosition(activeTarget.x + 0.75, activeTarget.y + 0.75);
+            const pTL = this.calculateRobotPosition(activeTarget.x - 1.00, activeTarget.y - 1.00);
+            const pBR = this.calculateRobotPosition(activeTarget.x + 1.00, activeTarget.y + 1.00);
             const pLeft   = Math.min(pTL.left, pBR.left);
             const pTop    = Math.min(pTL.top,  pBR.top);
             const pWidth  = Math.abs(pBR.left - pTL.left);
@@ -978,8 +978,8 @@ class XiaomiStaticMapCard extends LitElement {
       /* Active cleaning target overlays */
       .active-target-zone {
         position: absolute;
-        border: 2px solid rgba(33,150,243,0.9);
-        background: rgba(33,150,243,0.18);
+        border: 2px solid rgba(255,160,0,0.95);
+        background: rgba(255,160,0,0.22);
         pointer-events: none;
         z-index: 4;
         border-radius: 3px;
@@ -987,8 +987,8 @@ class XiaomiStaticMapCard extends LitElement {
       }
       .active-target-point {
         position: absolute;
-        border: 2px solid rgba(33,150,243,0.9);
-        background: rgba(33,150,243,0.18);
+        border: 2px solid rgba(255,160,0,0.95);
+        background: rgba(255,160,0,0.22);
         pointer-events: none;
         z-index: 4;
         border-radius: 3px;
@@ -997,18 +997,18 @@ class XiaomiStaticMapCard extends LitElement {
       .active-target-pin {
         position: absolute;
         width: 12px; height: 12px;
-        background: #2196F3;
+        background: #FFA000;
         border: 2px solid white;
         border-radius: 50%;
         transform: translate(-50%, -50%);
         pointer-events: none;
         z-index: 5;
-        box-shadow: 0 0 8px rgba(33,150,243,0.8);
+        box-shadow: 0 0 8px rgba(255,160,0,0.9);
         animation: target-pulse 2s ease-in-out infinite;
       }
       @keyframes target-pulse {
         0%, 100% { opacity: 1; }
-        50%       { opacity: 0.45; }
+        50%       { opacity: 0.4; }
       }
     `;
   }
