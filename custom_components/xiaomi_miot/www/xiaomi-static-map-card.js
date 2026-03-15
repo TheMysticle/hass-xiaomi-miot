@@ -787,8 +787,24 @@ class XiaomiStaticMapCard extends LitElement {
       .mush-icon ha-icon { --mdc-icon-size: 24px; display: flex; line-height: 0; }
       .mush-icon.off  { background: var(--secondary-background-color, rgba(0,0,0,.06)); color: var(--secondary-text-color); }
       .mush-icon.on   { background: rgba(0,150,136,.15); color: #009688; }
-      .mush-icon.cleaning { animation: spin 3s linear infinite; }
-      @keyframes spin { to { transform: rotate(360deg); } }
+      .mush-icon.cleaning { animation: cleaning 2s linear infinite; }
+      @keyframes cleaning {
+        0%  { transform: rotate(0)      translate(0); }
+        5%  { transform: rotate(0)      translate(0, -3px); }
+        10% { transform: rotate(0)      translate(0,  1px); }
+        15% { transform: rotate(0)      translate(0); }
+        20% { transform: rotate(30deg)  translate(0); }
+        25% { transform: rotate(30deg)  translate(0, -3px); }
+        30% { transform: rotate(30deg)  translate(0,  1px); }
+        35% { transform: rotate(30deg)  translate(0); }
+        40% { transform: rotate(0)      translate(0); }
+        45% { transform: rotate(-30deg) translate(0); }
+        50% { transform: rotate(-30deg) translate(0, -3px); }
+        55% { transform: rotate(-30deg) translate(0,  1px); }
+        60% { transform: rotate(-30deg) translate(0); }
+        70% { transform: rotate(0deg)   translate(0); }
+        100%{ transform: rotate(0deg); }
+      }
 
       .mush-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
       .mush-name { font-size: .92rem; font-weight: 500; color: var(--primary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
