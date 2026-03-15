@@ -376,6 +376,215 @@ logger:
   3. Extracts tokens from your cloud account. Also reveals the bind_key for BT devices
 
 
+---
+
+
+## 🧹 Vacuum Live Map & Shortcut Cards
+
+This fork adds a live vacuum map card, location shortcut cards, and real-time position tracking for Xiaomi MiOT vacuums. All frontend files are included in `custom_components/xiaomi_miot/www/` and must be registered as Lovelace resources.
+
+### Installation
+
+After installing the integration, the JS resources should register themselves, if they don't you'll need to add the two JS files as Lovelace resources:
+
+> [⚙️ Settings](https://my.home-assistant.io/redirect/config) > Dashboards > ⋮ > Resources > ➕ Add Resource
+
+Add both of the following with type **JavaScript Module**:
+
+```
+/local/xiaomi_miot/xiaomi-static-map-card.js
+/local/xiaomi_miot/xiaomi-vacuum-shortcuts.js
+```
+
+> The files are served from `custom_components/xiaomi_miot/www/` which HA exposes at `/local/xiaomi_miot/`.
+
+Restart Home Assistant after registering the resources.
+
+---
+
+### New Sensor Entities
+
+After restarting, each vacuum device will have four new sensor entities created automatically alongside the standard vacuum entity:
+
+| Entity | Description |
+|--------|-------------|
+| `sensor.<device>_vacuum_x_coordinate` | Vacuum X position in metres (relative to dock) |
+| `sensor.<device>_vacuum_y_coordinate` | Vacuum Y position in metres (relative to dock) |
+| `sensor.<device>_vacuum_rotation` | Vacuum heading in radians |
+| `sensor.<device>_vacuum_cleaning_target` | Last-sent cleaning target as JSON (`"none"` when idle) |
+
+Position sensors are polled every 1 second from `siid=10, piid=5` while the vacuum is cleaning and reset to `0.0` when it docks. The cleaning target sensor updates instantly when any zone clean or goto-point command is sent — from any source including automations — and clears automatically when the vacuum returns to idle or dock.
+
+The cleaning target sensor state format:
+```json
+// Zone clean
+{"type": "zone", "x_min": -2.4, "y_min": -5.0, "x_max": 0.85, "y_max": -3.5}
+
+// Goto point
+{"type": "point", "x": -3.2, "y": -4.3}
+```
+
+---
+
+### `xiaomi-static-map-card`
+
+A Mushroom-style card that shows a static floorplan image with the vacuum's live position overlaid. Tap to start/stop, hold to open the full map popup with zone and goto-point drawing tools.
+
+#### Card options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `image` | string | **Required.** URL of your floorplan image (e.g. `/local/floorplan.png`) |
+| `vacuum_entity` | string | **Required.** Vacuum entity ID |
+| `x_sensor` | string | X coordinate sensor entity |
+| `y_sensor` | string | Y coordinate sensor entity |
+| `rotation_sensor` | string | Rotation sensor entity |
+| `status_sensor` | string | Optional status sensor for instant state updates |
+| `target_sensor` | string | Cleaning target sensor — enables the zone/point overlay |
+| `dock` | `{x, y}` | Dock position as % of image width/height (set via editor) |
+| `map_exit_angle` | number | Direction the vacuum exits the dock (0=right, 90=down, 180=left, 270=up) |
+| `enable_mirror` | boolean | Mirror the X axis |
+| `scale_width_percent_per_meter` | number | Map scale — set via the editor's scale calibration tool |
+| `scale_mult_x` | number | Fine-tune X axis stretch (default `1.0`) |
+| `scale_mult_y` | number | Fine-tune Y axis stretch (default `1.0`) |
+| `manual_offset_x` | number | Manual X position nudge in % |
+| `manual_offset_y` | number | Manual Y position nudge in % |
+| `icon_rotation_offset` | number | Additional icon rotation offset in degrees |
+| `icon_scale` | number | Robot icon size as % of map width (default `10`) |
+| `command_style` | `standard` \| `miot_9_9` | Service call protocol — use `miot_9_9` for MiOT vacuums |
+| `show_extra_info` | boolean | Show fan speed and mode dropdowns on the card |
+| `fan_speed_entity` | string | Fan speed select entity |
+| `fan_speed_labels` | list | Friendly labels for each fan speed option (top = lowest) |
+| `mode_entity` | string | Mode select entity |
+| `mode_labels` | list | Friendly labels for each mode option |
+| `name` | string | Card display name (defaults to vacuum friendly name) |
+
+#### Example configuration
+
+```yaml
+type: custom:xiaomi-static-map-card
+image: /local/floorplan.png
+vacuum_entity: vacuum.ijai_v3_542b_robot_cleaner
+x_sensor: sensor.ijai_v3_542b_vacuum_x_coordinate
+y_sensor: sensor.ijai_v3_542b_vacuum_y_coordinate
+rotation_sensor: sensor.ijai_v3_542b_vacuum_rotation
+status_sensor: sensor.ijai_v3_542b_status
+target_sensor: sensor.ijai_v3_542b_vacuum_cleaning_target
+command_style: miot_9_9
+dock:
+  x: 52.3
+  y: 78.1
+map_exit_angle: 90
+scale_width_percent_per_meter: 8.4
+scale_mult_x: 1.0
+scale_mult_y: 1.0
+icon_scale: 10
+show_extra_info: true
+fan_speed_entity: select.ijai_v3_542b_fan_level
+mode_entity: select.ijai_v3_542b_mode
+```
+
+#### Setting up the map calibration
+
+Use the built-in editor (three-dot menu > Edit card) to calibrate the map without touching YAML:
+
+1. **Scale** — click "1. Scale", then click two points on the map a known distance apart and enter the distance in metres when prompted.
+2. **Dock** — click "2. Dock" then click the dock location on the map image.
+3. **Capture** — with the vacuum physically at the dock and the dock position set, click "3. Capture" to record the sensor reference vector. This aligns the coordinate system.
+4. Set **Exit Dir** to match which direction the vacuum drives away from the dock.
+5. Enable **Mirror** if the map appears left-right flipped.
+
+Use the **Tuning** section to fine-adjust if the robot icon drifts from its actual position.
+
+#### Cleaning target overlay
+
+When `target_sensor` is configured and a zone clean or goto-point command is sent, a pulsing amber overlay appears on the popup map showing the exact area or point. The overlay uses the same coordinate transform as the robot icon, so all your dock, scale, rotation, mirror, and offset settings apply automatically.
+
+- **Zone clean**: rendered as a filled amber rectangle
+- **Goto point**: rendered as a 2 m square with a centre pin dot
+- The overlay disappears automatically when the vacuum returns to idle or dock
+
+#### Coordinate inspector
+
+In the map popup, tap the 📍 inspector button (bottom-left of controls) to enter inspection mode. Tap any point on the map to read its real-world coordinates. Tap a second point to get the zone coordinates for that rectangle, along with a copy button. These coordinates can be pasted directly into shortcut card configs or automations.
+
+---
+
+### `xiaomi-vacuum-shortcut-card` / `xiaomi-vacuum-custom-card`
+
+Mushroom-style chips that send the vacuum to a pre-defined location with a single tap (confirm) or hold.
+
+**Tap once** → shows "Tap again to confirm"  
+**Tap again** → sends the command  
+**Hold** → sends immediately
+
+#### Built-in shortcut cards
+
+Four pre-configured cards are included with hardcoded coordinates matching a specific floorplan. Use `xiaomi-vacuum-custom-card` for your own locations.
+
+| Card type | Location | Command type |
+|-----------|----------|--------------|
+| `xiaomi-vacuum-corridor-card` | Corridor | Goto point |
+| `xiaomi-vacuum-kitchen-card` | Kitchen | Zone clean |
+| `xiaomi-vacuum-livingroom-card` | Living room | Zone clean |
+| `xiaomi-vacuum-emaspc-card` | Ema's PC area | Goto point |
+
+#### `xiaomi-vacuum-custom-card`
+
+Fully configurable via the visual editor. Supports both goto-point and zone clean, with a coordinate inspector tip linking to the map card.
+
+```yaml
+type: custom:xiaomi-vacuum-custom-card
+vacuum_entity: vacuum.ijai_v3_542b_robot_cleaner
+name: Kitchen
+icon: mdi:silverware-fork-knife
+type_: zone
+x_min: -2.402
+y_min: -4.990
+x_max: 0.855
+y_max: -3.530
+command_style: miot_9_9
+```
+
+#### `xiaomi-vacuum-zone-list-card`
+
+A dropdown card listing multiple zones and goto-points with a single Clean and Return button. Useful for dashboards where you want all locations in one card.
+
+```yaml
+type: custom:xiaomi-vacuum-zone-list-card
+vacuum_entity: vacuum.ijai_v3_542b_robot_cleaner
+name: Vacuum Shortcuts
+command_style: miot_9_9
+zones:
+  - name: Kitchen
+    type_: zone
+    x_min: -2.402
+    y_min: -4.990
+    x_max: 0.855
+    y_max: -3.530
+  - name: Living Room
+    type_: zone
+    x_min: -1.097
+    y_min: -3.254
+    x_max: 2.630
+    y_max: 0.020
+  - name: Corridor
+    type_: point
+    x: -3.216
+    y: -4.343
+```
+
+#### Command style reference
+
+| `command_style` | Zone service call | Goto service call |
+|-----------------|-------------------|-------------------|
+| `miot_9_9` | `xiaomi_miot.call_action` siid=9 aiid=8, then aiid=3 | `xiaomi_miot.call_action` siid=9 aiid=9 |
+| `standard` | `vacuum.send_command` app_zoned_clean | `vacuum.send_command` app_goto_target |
+
+Use `miot_9_9` for MiOT-protocol vacuums (recommended for most Xiaomi/ijai devices). Use `standard` for Roborock or Viomi devices using the legacy miio protocol.
+
+---
+
 ## Thanks
 
 - [PyCharm](https://www.jetbrains.com/pycharm/)
