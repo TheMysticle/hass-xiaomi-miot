@@ -6,12 +6,12 @@ from datetime import timedelta
 from homeassistant.components.vacuum import (  # noqa: F401
     DOMAIN as ENTITY_DOMAIN,
     StateVacuumEntity,
+    VacuumActivity,
     VacuumEntityFeature,  # v2022.5
 )
 from homeassistant.components.sensor import (
     SensorEntity as SensorBaseEntity,
 )
-from .core.const import VacuumActivity
 
 from . import (
     DOMAIN,
@@ -254,6 +254,7 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
             self._supported_features |= VacuumEntityFeature.STATE
         if self._act_locate:
             self._supported_features |= VacuumEntityFeature.LOCATE
+        self._supported_features |= VacuumEntityFeature.SEND_COMMAND
 
         # Cleaning path coordinate sensors
         self._sensor_x: VacuumCoordinateSensor = None
@@ -609,9 +610,12 @@ class MiotVacuumEntity(MiotEntity, StateVacuumEntity):
                 self._attr_activity = VacuumActivity.CLEANING
             elif val in self._prop_status.list_search('Idle', 'Sleep'):
                 self._attr_activity = VacuumActivity.IDLE
-            elif val in self._prop_status.list_search('Charging', 'Charging Completed', 'Fullcharge', 'Charge Done', 'Drying'):
+            elif val in self._prop_status.list_search(
+                'Charging', 'Charging Completed', 'Fullcharge', 'Charge Done', 'Charged', 'Drying',
+                'MultiTaskStationWorking', 'StationWorking', 'MultiTaskRecharge', 'WashBreak',
+            ):
                 self._attr_activity = VacuumActivity.DOCKED
-            elif val in self._prop_status.list_search('Go Charging'):
+            elif val in self._prop_status.list_search('Go Charging', 'GoWash', 'Go Wash'):
                 self._attr_activity = VacuumActivity.RETURNING
             elif val in self._prop_status.list_search('Paused'):
                 self._attr_activity = VacuumActivity.PAUSED
