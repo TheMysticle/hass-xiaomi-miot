@@ -23,5 +23,5 @@
     "python-miio>=0.5.12",
     "micloud>=0.5"
   ],
-  "version": "2.6.1"
+  "version": "2.6.2"
 }
